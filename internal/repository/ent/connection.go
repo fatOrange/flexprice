@@ -411,6 +411,19 @@ func convertConnectionMetadataToMap(encryptedSecretData types.ConnectionMetadata
 			}
 			return data
 		}
+	case types.SecretProviderWechatPay:
+		if encryptedSecretData.WechatPay != nil {
+			return map[string]interface{}{
+				"appid":                              encryptedSecretData.WechatPay.AppID,
+				"mchid":                              encryptedSecretData.WechatPay.MerchantID,
+				"merchant_certificate_serial_number": encryptedSecretData.WechatPay.MerchantCertificateSerialNumber,
+				"merchant_private_key":               encryptedSecretData.WechatPay.MerchantPrivateKey,
+				"api_v3_key":                         encryptedSecretData.WechatPay.APIv3Key,
+				"platform_public_key":                encryptedSecretData.WechatPay.PlatformPublicKey,
+				"platform_public_key_id":             encryptedSecretData.WechatPay.PlatformPublicKeyID,
+				"notify_url":                         encryptedSecretData.WechatPay.NotifyURL,
+			}
+		}
 	case types.SecretProviderTabs:
 		if encryptedSecretData.Tabs != nil {
 			return map[string]interface{}{

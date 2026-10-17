@@ -188,6 +188,12 @@ func (s *customerPortalService) shouldAllowToPayInvoice(ctx context.Context, inv
 }
 
 func paymentActionFrom(payResp *dto.PaymentResponse) *types.PaymentAction {
+	// Providers that return a typed action (WeChat Pay QR/JSAPI) are preferred:
+	// there is no URL for them, so the legacy gateway-metadata URL below would
+	// leave the customer with nothing to act on.
+	if payResp.NextAction != nil && payResp.NextAction.Type != "" {
+		return payResp.NextAction
+	}
 	if payResp.GatewayMetadata == nil {
 		return nil
 	}

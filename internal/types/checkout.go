@@ -91,6 +91,7 @@ const (
 	CheckoutPaymentProviderRazorpay  CheckoutPaymentProvider = "razorpay"
 	CheckoutPaymentProviderChargebee CheckoutPaymentProvider = "chargebee"
 	CheckoutPaymentProviderStripe    CheckoutPaymentProvider = "stripe"
+	CheckoutPaymentProviderWechatPay CheckoutPaymentProvider = "wechatpay"
 )
 
 func (p CheckoutPaymentProvider) String() string { return string(p) }
@@ -100,10 +101,11 @@ func (p CheckoutPaymentProvider) Validate() error {
 		CheckoutPaymentProviderRazorpay,
 		CheckoutPaymentProviderChargebee,
 		CheckoutPaymentProviderStripe,
+		CheckoutPaymentProviderWechatPay,
 	}
 	if p != "" && !lo.Contains(allowed, p) {
 		return ierr.NewError("invalid checkout payment provider").
-			WithHint("Allowed values: razorpay, chargebee, stripe").
+			WithHint("Allowed values: razorpay, chargebee, stripe, wechatpay").
 			WithReportableDetails(map[string]any{"allowed_values": allowed}).
 			Mark(ierr.ErrValidation)
 	}
@@ -119,6 +121,8 @@ func (p CheckoutPaymentProvider) ToPaymentGateway() (PaymentGatewayType, bool) {
 		return PaymentGatewayTypeChargebee, true
 	case CheckoutPaymentProviderStripe:
 		return PaymentGatewayTypeStripe, true
+	case CheckoutPaymentProviderWechatPay:
+		return PaymentGatewayTypeWechatPay, true
 	default:
 		return "", false
 	}
@@ -134,6 +138,8 @@ func CheckoutProviderFromGateway(g PaymentGatewayType) (CheckoutPaymentProvider,
 		return CheckoutPaymentProviderChargebee, true
 	case PaymentGatewayTypeStripe:
 		return CheckoutPaymentProviderStripe, true
+	case PaymentGatewayTypeWechatPay:
+		return CheckoutPaymentProviderWechatPay, true
 	default:
 		return "", false
 	}
@@ -156,6 +162,10 @@ func (p CheckoutPaymentProvider) LinkExpiry() time.Duration {
 		// Stripe rejects an expires_at under 30m, so asking for exactly 30 sits on the
 		// floor and arrives under it. Leave headroom rather than race the boundary.
 		return 35 * time.Minute
+	case CheckoutPaymentProviderWechatPay:
+		// WeChat Pay accepts payment for exactly 30 minutes: the adapter sends
+		// time_expire 30m out and closes the order once it passes.
+		return 30 * time.Minute
 	default:
 		return 30 * time.Minute
 	}
@@ -175,6 +185,10 @@ func (p CheckoutPaymentProvider) SavedMethodSettlement() time.Duration {
 	switch p {
 	case CheckoutPaymentProviderRazorpay:
 		return 72 * time.Hour
+	case CheckoutPaymentProviderWechatPay:
+		// WeChat Pay has no saved-method or mandate path: every payment is a fresh
+		// customer-present scan or JSAPI payment, so nothing settles late.
+		return 0
 	default:
 		return 0
 	}
@@ -191,15 +205,22 @@ type PaymentActionType string
 const (
 	PaymentActionTypeCheckoutURL PaymentActionType = "checkout_url"
 	PaymentActionTypePaymentLink PaymentActionType = "payment_link"
+	PaymentActionTypeQRCode      PaymentActionType = "qr_code"
+	PaymentActionTypeJSAPI       PaymentActionType = "jsapi"
 )
 
 func (t PaymentActionType) String() string { return string(t) }
 
 func (t PaymentActionType) Validate() error {
-	allowed := []PaymentActionType{PaymentActionTypeCheckoutURL, PaymentActionTypePaymentLink}
+	allowed := []PaymentActionType{
+		PaymentActionTypeCheckoutURL,
+		PaymentActionTypePaymentLink,
+		PaymentActionTypeQRCode,
+		PaymentActionTypeJSAPI,
+	}
 	if t != "" && !lo.Contains(allowed, t) {
 		return ierr.NewError("invalid payment action type").
-			WithHint("Allowed values: checkout_url, payment_link").
+			WithHint("Allowed values: checkout_url, payment_link, qr_code, jsapi").
 			WithReportableDetails(map[string]any{"allowed_values": allowed}).
 			Mark(ierr.ErrValidation)
 	}
@@ -210,7 +231,13 @@ func (t PaymentActionType) Validate() error {
 // Surfaced in CheckoutSessionResponse; the full CheckoutProviderResult is never exposed.
 type PaymentAction struct {
 	Type PaymentActionType `json:"type"`
-	URL  string            `json:"url"`
+	URL  string            `json:"url,omitempty"`
+	// QRContent is the provider payload to render as a QR code for qr_code
+	// actions (WeChat Pay native). The customer scans it with the WeChat app.
+	QRContent string `json:"qr_content,omitempty"`
+	// JSAPI carries the signed parameters to invoke WeChat Pay inside the WeChat
+	// browser for jsapi actions.
+	JSAPI *WechatPayJSAPIParameters `json:"jsapi,omitempty"`
 }
 
 // ── Filter ───────────────────────────────────────────────────────────────────

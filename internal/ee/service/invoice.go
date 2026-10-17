@@ -4054,29 +4054,40 @@ func publishInvoiceWebhook(ctx context.Context, params ServiceParams, eventName 
 		EntityType:    types.SystemEntityTypeInvoice,
 		EntityID:      invoiceID,
 	}
-	params.Logger.Info(ctx, "attempting to publish webhook event",
-		"webhook_id", webhookEvent.ID,
-		"event_name", eventName,
-		"invoice_id", invoiceID,
-		"tenant_id", webhookEvent.TenantID,
-		"environment_id", webhookEvent.EnvironmentID,
-	)
+	// The webhook consumer reads the invoice at delivery time, so a publish
+	// fired mid-transaction can serve the pre-reconciliation state, and a
+	// rollback would announce a transition that never committed. Queue it
+	// behind the commit; with no transaction open, keep the immediate path.
+	// The queued copy runs after the commit has returned the connection to the
+	// pool, so it must not carry the transaction.
+	publish := func(publishCtx context.Context) {
+		params.Logger.Info(publishCtx, "attempting to publish webhook event",
+			"webhook_id", webhookEvent.ID,
+			"event_name", eventName,
+			"invoice_id", invoiceID,
+			"tenant_id", webhookEvent.TenantID,
+			"environment_id", webhookEvent.EnvironmentID,
+		)
 
-	if err := params.WebhookPublisher.PublishWebhook(ctx, webhookEvent); err != nil {
-		params.Logger.Error(ctx, "failed to publish webhook event",
-			"error", err,
+		if err := params.WebhookPublisher.PublishWebhook(publishCtx, webhookEvent); err != nil {
+			params.Logger.Error(publishCtx, "failed to publish webhook event",
+				"error", err,
+				"webhook_id", webhookEvent.ID,
+				"event_name", eventName,
+				"invoice_id", invoiceID,
+			)
+			return
+		}
+
+		params.Logger.Info(publishCtx, "webhook event published successfully",
 			"webhook_id", webhookEvent.ID,
 			"event_name", eventName,
 			"invoice_id", invoiceID,
 		)
-		return
 	}
-
-	params.Logger.Info(ctx, "webhook event published successfully",
-		"webhook_id", webhookEvent.ID,
-		"event_name", eventName,
-		"invoice_id", invoiceID,
-	)
+	if !types.RegisterPostCommit(ctx, func() { publish(types.WithoutDBTransaction(ctx)) }) {
+		publish(ctx)
+	}
 }
 
 // reconcileLineItems updates existing line items in-place when sub_line_item_id matches,

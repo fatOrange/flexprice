@@ -75,11 +75,21 @@ func (p *paymentProcessor) ProcessPayment(ctx context.Context, id string) (*paym
 	// For payment links, if status is INITIATED, we need to create the payment link
 	// If status is already PENDING, we don't need to do anything more
 	if paymentObj.PaymentMethodType == types.PaymentMethodTypePaymentLink && paymentObj.PaymentStatus == types.PaymentStatusInitiated {
-		// Update payment status to processing temporarily
+		// Update payment status to processing temporarily. The write is
+		// conditioned on INITIATED: a callback for an order bound by an earlier
+		// attempt can settle the payment before this retry starts, and that
+		// settlement must never be overwritten by a processing marker.
 		statusBefore := paymentObj.PaymentStatus
 		paymentObj.PaymentStatus = types.PaymentStatusProcessing
 		paymentObj.UpdatedAt = time.Now().UTC()
-		if err := p.PaymentRepo.Update(ctx, paymentObj); err != nil {
+		if err := p.PaymentRepo.UpdateWithExpectedStatus(ctx, paymentObj, statusBefore); err != nil {
+			if ierr.IsVersionConflict(err) {
+				latest, getErr := p.PaymentRepo.Get(ctx, paymentObj.ID)
+				if getErr != nil {
+					return paymentObj, getErr
+				}
+				return latest, nil
+			}
 			return paymentObj, err
 		}
 		recordPaymentTransition(ctx, paymentObj, statusBefore)
@@ -139,9 +149,12 @@ func (p *paymentProcessor) ProcessPayment(ctx context.Context, id string) (*paym
 		// For payment links, if the error occurred during payment link creation,
 		// keep the status as INITIATED instead of marking as FAILED
 		if paymentObj.PaymentMethodType == types.PaymentMethodTypePaymentLink {
-			// Keep status as INITIATED when Stripe SDK fails for payment links
-			p.Logger.Info(ctx, "keeping payment link as initiated due to Stripe SDK failure",
+			// An intent whose gateway call failed is left unresolved: the request
+			// may still have reached the provider, so its outcome is unknown until
+			// reconciliation, and the local row keeps its bound handle.
+			p.Logger.Info(ctx, "preserving unresolved payment intent after gateway failure",
 				"payment_id", paymentObj.ID,
+				"gateway", paymentProviderLabel(paymentObj),
 				"status", paymentObj.PaymentStatus,
 				"error", processErr.Error())
 			// Reset status back to INITIATED if it was changed to PROCESSING
@@ -164,7 +177,6 @@ func (p *paymentProcessor) ProcessPayment(ctx context.Context, id string) (*paym
 			paymentObj.PaymentStatus = types.PaymentStatusPending
 			paymentObj.SucceededAt = nil // Keep succeeded_at as nil
 			p.Logger.Info(ctx, "keeping payment link as pending", "payment_id", paymentObj.ID, "status", paymentObj.PaymentStatus)
-			p.publishSystemEvent(ctx, types.WebhookEventPaymentPending, paymentObj.ID)
 		} else {
 			paymentObj.PaymentStatus = types.PaymentStatusSucceeded
 			succeededAt := time.Now().UTC()
@@ -175,14 +187,57 @@ func (p *paymentProcessor) ProcessPayment(ctx context.Context, id string) (*paym
 	}
 
 	paymentObj.UpdatedAt = time.Now().UTC()
-	ctx = withPaymentStatusAction(ctx, paymentObj.ID, statusBeforeOutcome, paymentObj.PaymentStatus)
-	if err := p.PaymentRepo.Update(ctx, paymentObj); err != nil {
-		return paymentObj, err
+	finalPayment := paymentObj
+	if paymentObj.PaymentMethodType == types.PaymentMethodTypePaymentLink {
+		// Creating a payment link is the one path where another writer can win
+		// the row: the gateway callback may settle the payment while the link
+		// response is still in flight. Re-read and never write this request's
+		// stale copy over a state that moved on.
+		latest, err := p.PaymentRepo.Get(ctx, paymentObj.ID)
+		if err != nil {
+			return paymentObj, err
+		}
+		switch latest.PaymentStatus {
+		case types.PaymentStatusInitiated, types.PaymentStatusProcessing, types.PaymentStatusPending:
+			ctx = withPaymentStatusAction(ctx, paymentObj.ID, statusBeforeOutcome, paymentObj.PaymentStatus)
+			if err := p.PaymentRepo.UpdateWithExpectedStatus(ctx, paymentObj, latest.PaymentStatus); err != nil {
+				if !ierr.IsVersionConflict(err) {
+					return paymentObj, err
+				}
+				// Lost the conditional write to a concurrent transition; report
+				// whatever the row now holds instead of a stale outcome.
+				current, getErr := p.PaymentRepo.Get(ctx, paymentObj.ID)
+				if getErr != nil {
+					return paymentObj, getErr
+				}
+				finalPayment = current
+			}
+		default:
+			// Settled or terminal (typically a gateway callback): that state wins.
+			finalPayment = latest
+		}
+	} else {
+		ctx = withPaymentStatusAction(ctx, paymentObj.ID, statusBeforeOutcome, paymentObj.PaymentStatus)
+		if err := p.PaymentRepo.Update(ctx, paymentObj); err != nil {
+			return paymentObj, err
+		}
 	}
-	recordPaymentTransition(ctx, paymentObj, statusBeforeOutcome)
+	recordPaymentTransition(ctx, finalPayment, statusBeforeOutcome)
 
-	// If payment succeeded, handle post-processing
-	if paymentObj.PaymentStatus == types.PaymentStatusSucceeded {
+	// The pending event belongs to the payment only when this request actually
+	// left it pending; a row a callback settled meanwhile must not announce a
+	// pending state it never had.
+	if finalPayment == paymentObj &&
+		paymentObj.PaymentMethodType == types.PaymentMethodTypePaymentLink &&
+		paymentObj.PaymentStatus == types.PaymentStatusPending &&
+		processErr == nil {
+		p.publishSystemEvent(ctx, types.WebhookEventPaymentPending, paymentObj.ID)
+	}
+
+	// If this request itself settled the payment, handle post-processing. A
+	// payment settled concurrently by a gateway callback was reconciled on that
+	// path and must not be processed twice.
+	if finalPayment == paymentObj && paymentObj.PaymentStatus == types.PaymentStatusSucceeded {
 		if err := p.handlePostProcessing(ctx, paymentObj); err != nil {
 			p.Logger.Error(ctx, "failed to handle post-processing", "error", err, "payment_id", paymentObj.ID)
 			// Note: We don't return this error as the payment itself was successful
@@ -190,10 +245,21 @@ func (p *paymentProcessor) ProcessPayment(ctx context.Context, id string) (*paym
 	}
 
 	if processErr != nil {
-		return paymentObj, processErr
+		// A payment can settle while its link is being created (a callback for an
+		// earlier bound order, or a creation response lost in flight). When the
+		// row is already collected, reporting failure would contradict the
+		// recorded money.
+		if paymentObj.PaymentMethodType == types.PaymentMethodTypePaymentLink &&
+			finalPayment.PaymentStatus == types.PaymentStatusSucceeded {
+			p.Logger.Info(ctx, "payment settled while the payment link was being created; reporting the settled state",
+				"payment_id", finalPayment.ID,
+				"error", processErr.Error())
+			return finalPayment, nil
+		}
+		return finalPayment, processErr
 	}
 
-	return paymentObj, nil
+	return finalPayment, nil
 }
 
 func (p *paymentProcessor) handlePaymentLinkCreation(ctx context.Context, paymentObj *payment.Payment) error {
@@ -229,6 +295,8 @@ func (p *paymentProcessor) handlePaymentLinkCreation(ctx context.Context, paymen
 		return p.handleNomodPaymentLinkCreation(ctx, paymentObj, invoice)
 	case types.PaymentGatewayTypeChargebee:
 		return p.handleChargebeePaymentLinkCreation(ctx, paymentObj, invoice)
+	case types.PaymentGatewayTypeWechatPay:
+		return p.handleWechatPayPaymentLinkCreation(ctx, paymentObj, invoice)
 	default:
 		return ierr.NewError("unsupported payment gateway").
 			WithHint("Payment gateway not supported for payment links").
@@ -494,6 +562,13 @@ func (p *paymentProcessor) handleChargebeePaymentLinkCreation(ctx context.Contex
 		"payment_id", paymentObj.ID,
 		"invoice_id", paymentObj.DestinationID)
 	return nil
+}
+
+// handleWechatPayPaymentLinkCreation creates the WeChat Pay order backing an
+// existing-invoice payment. Order binding, deadline, and settlement live with
+// the WeChat Pay service so the callback and query paths share them.
+func (p *paymentProcessor) handleWechatPayPaymentLinkCreation(ctx context.Context, paymentObj *payment.Payment, inv *invoice.Invoice) error {
+	return newWechatPayService(p.ServiceParams).createOrderForPayment(ctx, paymentObj, inv)
 }
 
 func gatewayURL(paymentObj *payment.Payment, key string) string {
@@ -897,23 +972,34 @@ func (p *paymentProcessor) DispatchMarkPaid(ctx context.Context, invoiceID strin
 		return
 	}
 
-	connections, err := p.ConnectionRepo.ListAllPublished(ctx)
-	if err != nil {
-		p.Logger.Error(ctx, "failed to list published connections, skipping mark-paid dispatch",
-			"error", err, "invoice_id", invoiceID)
-		return
+	// The mark-paid workflows read the invoice the caller's transaction may
+	// still be writing, so inside a transaction the dispatch queues behind the
+	// commit; with none open it runs inline as before. The queued copy runs
+	// after the commit has returned the connection to the pool, so it must not
+	// carry the transaction.
+	dispatch := func(dispatchCtx context.Context) {
+		connections, err := p.ConnectionRepo.ListAllPublished(dispatchCtx)
+		if err != nil {
+			p.Logger.Error(dispatchCtx, "failed to list published connections, skipping mark-paid dispatch",
+				"error", err, "invoice_id", invoiceID)
+			return
+		}
+
+		connected := make(map[types.SecretProvider]bool, len(connections))
+		for _, c := range connections {
+			connected[c.ProviderType] = true
+		}
+
+		if connected[types.SecretProviderZohoBooks] {
+			p.dispatchZohoMarkPaid(dispatchCtx, invoiceID)
+		}
+		if connected[types.SecretProviderWhop] {
+			p.dispatchWhopMarkPaid(dispatchCtx, invoiceID)
+		}
 	}
 
-	connected := make(map[types.SecretProvider]bool, len(connections))
-	for _, c := range connections {
-		connected[c.ProviderType] = true
-	}
-
-	if connected[types.SecretProviderZohoBooks] {
-		p.dispatchZohoMarkPaid(ctx, invoiceID)
-	}
-	if connected[types.SecretProviderWhop] {
-		p.dispatchWhopMarkPaid(ctx, invoiceID)
+	if !types.RegisterPostCommit(ctx, func() { dispatch(types.WithoutDBTransaction(ctx)) }) {
+		dispatch(ctx)
 	}
 }
 

@@ -17,6 +17,21 @@ type PaymentParams struct {
 	PaymentProviderConfig *types.CheckoutPaymentProviderConfig `json:"payment_provider_config,omitempty"`
 }
 
+// ValidateCheckoutPaymentProviderSupported rejects providers a checkout session
+// cannot drive end to end. WeChat Pay has no redirect, saved method, or mandate:
+// a session created with it would write subscription/wallet/addon entities and
+// only fail later, so it is refused before any write. Existing-invoice WeChat
+// payments go through POST /v1/payments instead.
+func ValidateCheckoutPaymentProviderSupported(provider types.CheckoutPaymentProvider) error {
+	if provider != types.CheckoutPaymentProviderWechatPay {
+		return nil
+	}
+	return ierr.NewError("wechatpay is not supported for checkout sessions").
+		WithHint("Use POST /v1/payments with payment_gateway=wechatpay to pay an existing invoice").
+		WithReportableDetails(map[string]any{"payment_provider": provider}).
+		Mark(ierr.ErrValidation)
+}
+
 func (p *PaymentParams) Validate() error {
 	if p == nil {
 		return nil
@@ -25,6 +40,9 @@ func (p *PaymentParams) Validate() error {
 		return err
 	}
 	if err := p.PaymentProvider.Validate(); err != nil {
+		return err
+	}
+	if err := ValidateCheckoutPaymentProviderSupported(p.PaymentProvider); err != nil {
 		return err
 	}
 	if p.PaymentProviderConfig != nil {

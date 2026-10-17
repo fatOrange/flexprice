@@ -24,6 +24,7 @@ const (
 	ConnectionMetadataTypePaddle         ConnectionMetadataType = "paddle"
 	ConnectionMetadataTypeZohoBooks      ConnectionMetadataType = "zoho_books"
 	ConnectionMetadataTypeWhop           ConnectionMetadataType = "whop"
+	ConnectionMetadataTypeWechatPay      ConnectionMetadataType = "wechatpay"
 	ConnectionMetadataTypeAWSMarketplace ConnectionMetadataType = "aws_marketplace"
 	ConnectionMetadataTypeGCPMarketplace ConnectionMetadataType = "gcp_marketplace"
 )
@@ -41,12 +42,13 @@ func (t ConnectionMetadataType) Validate() error {
 		ConnectionMetadataTypePaddle,
 		ConnectionMetadataTypeZohoBooks,
 		ConnectionMetadataTypeWhop,
+		ConnectionMetadataTypeWechatPay,
 		ConnectionMetadataTypeAWSMarketplace,
 		ConnectionMetadataTypeGCPMarketplace,
 	}
 	if !lo.Contains(allowedTypes, t) {
 		return ierr.NewError("invalid connection metadata type").
-			WithHint("Connection metadata type must be one of: stripe, generic, s3, hubspot, razorpay, chargebee, nomod, moyasar, paddle, zoho_books, whop, aws_marketplace, gcp_marketplace").
+			WithHint("Connection metadata type must be one of: stripe, generic, s3, hubspot, razorpay, chargebee, nomod, moyasar, paddle, zoho_books, whop, wechatpay, aws_marketplace, gcp_marketplace").
 			Mark(ierr.ErrValidation)
 	}
 	return nil
@@ -704,6 +706,7 @@ type ConnectionMetadata struct {
 	Paddle           *PaddleConnectionMetadata          `json:"paddle,omitempty"`
 	ZohoBooks        *ZohoBooksConnectionMetadata       `json:"zoho_books,omitempty"`
 	Whop             *WhopConnectionMetadata            `json:"whop,omitempty"`
+	WechatPay        *WechatPayConnectionMetadata       `json:"wechatpay,omitempty"`
 	Tabs             *TabsConnectionMetadata            `json:"tabs,omitempty"`
 	AWSMarketplace   *AWSMarketplaceConnectionSecrets   `json:"aws_marketplace,omitempty"`
 	GCPMarketplace   *GCPMarketplaceConnectionSecrets   `json:"gcp_marketplace,omitempty"`
@@ -792,6 +795,13 @@ func (c *ConnectionMetadata) Validate(providerType SecretProvider) error {
 				Mark(ierr.ErrValidation)
 		}
 		return c.Whop.Validate()
+	case SecretProviderWechatPay:
+		if c.WechatPay == nil {
+			return ierr.NewError("wechatpay metadata is required").
+				WithHint("WeChat Pay metadata is required for wechatpay provider").
+				Mark(ierr.ErrValidation)
+		}
+		return c.WechatPay.Validate()
 	case SecretProviderTabs:
 		if c.Tabs == nil {
 			return ierr.NewError("tabs metadata is required").

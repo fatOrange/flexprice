@@ -243,6 +243,35 @@ func convertMapToConnectionMetadata(metadata map[string]interface{}, providerTyp
 		return types.ConnectionMetadata{
 			Whop: whopMetadata,
 		}
+	case types.SecretProviderWechatPay:
+		wechatPayMetadata := &types.WechatPayConnectionMetadata{}
+		if appID, ok := metadata["appid"].(string); ok {
+			wechatPayMetadata.AppID = appID
+		}
+		if merchantID, ok := metadata["mchid"].(string); ok {
+			wechatPayMetadata.MerchantID = merchantID
+		}
+		if serialNumber, ok := metadata["merchant_certificate_serial_number"].(string); ok {
+			wechatPayMetadata.MerchantCertificateSerialNumber = serialNumber
+		}
+		if privateKey, ok := metadata["merchant_private_key"].(string); ok {
+			wechatPayMetadata.MerchantPrivateKey = privateKey
+		}
+		if apiV3Key, ok := metadata["api_v3_key"].(string); ok {
+			wechatPayMetadata.APIv3Key = apiV3Key
+		}
+		if platformPublicKey, ok := metadata["platform_public_key"].(string); ok {
+			wechatPayMetadata.PlatformPublicKey = platformPublicKey
+		}
+		if platformPublicKeyID, ok := metadata["platform_public_key_id"].(string); ok {
+			wechatPayMetadata.PlatformPublicKeyID = platformPublicKeyID
+		}
+		if notifyURL, ok := metadata["notify_url"].(string); ok {
+			wechatPayMetadata.NotifyURL = notifyURL
+		}
+		return types.ConnectionMetadata{
+			WechatPay: wechatPayMetadata,
+		}
 	case types.SecretProviderTabs:
 		tabsMetadata := &types.TabsConnectionMetadata{}
 		if apiKey, ok := metadata["api_key"].(string); ok {

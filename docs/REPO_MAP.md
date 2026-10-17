@@ -18,6 +18,7 @@ FlexPrice is a **Go monolith** (Gin HTTP + Uber Fx DI) that can split by **deplo
 | ----- | ---- |
 | `cmd/server/main.go` | Sole application binary: wires Fx modules, registers HTTP handlers, starts pub/sub router (optional), Temporal workers (optional), Gin server |
 | `cmd/migrate/main.go` | Database migration tooling (separate binary) |
+| `cmd/wechatpay-smoke` | Local acceptance harness for the WeChat Pay connector (`make wechatpay-smoke`): real router/services/official SDK against an isolated, signed fake APIv3 gateway with per-run fake credentials |
 
 There is **no separate `consumer` binary** in `cmd/`; consumer behavior is activated via `FLEXPRICE_DEPLOYMENT_MODE` (see `internal/types` and `cmd/server/main.go`).
 
@@ -101,7 +102,7 @@ flowchart TB
 | Domain | `internal/domain/` | Interfaces + pure models per aggregate |
 | Repositories | `internal/repository/` | Ent + ClickHouse implementations |
 | Temporal | `internal/temporal/` | Client, worker manager, workflows, activities, registration |
-| Integrations | `internal/integration/` | Payment/billing/connectors (Stripe, Chargebee, Paddle, Razorpay, Moyasar, Nomod, QuickBooks, Zoho, HubSpot, S3, etc.) |
+| Integrations | `internal/integration/` | Payment/billing/connectors (Stripe, Chargebee, Paddle, Razorpay, Moyasar, Nomod, QuickBooks, Zoho, HubSpot, S3, WeChat Pay, etc.) |
 | Outbound webhooks | `internal/webhook/` | Kafka-backed pipeline to deliver customer webhooks / system events |
 | Integration events | `internal/integration/events/` | Isolated consumer group on **system_events**-shaped topics |
 | Pub/sub | `internal/pubsub/` + `internal/pubsub/kafka/` | Watermill adapters, shared subscribe patterns |

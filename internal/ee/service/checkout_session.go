@@ -84,6 +84,13 @@ func (s *checkoutSessionService) Create(ctx context.Context, req dto.CreateCheck
 		return nil, err
 	}
 
+	// Explicit service-seam guard: a WeChat Pay session would create its draft
+	// subscription/invoice and only fail once the session is fulfilled. Refuse
+	// before the session row or any related entity is written.
+	if err := dto.ValidateCheckoutPaymentProviderSupported(req.PaymentProvider); err != nil {
+		return nil, err
+	}
+
 	cfg := &types.CheckoutPaymentProviderConfig{}
 	if req.PaymentProviderConfig != nil {
 		cfg = req.PaymentProviderConfig
@@ -816,6 +823,14 @@ func (s *checkoutSessionService) StartPayFirstCheckoutSession(
 	req *dto.PayFirstCheckoutRequest,
 ) (*dto.CheckoutSessionResponse, error) {
 	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Refuse providers without a checkout-session payment flow before anything
+	// is written: a WeChat Pay session would create its subscription/wallet
+	// entities and only fail later. Existing-invoice WeChat payments go through
+	// POST /v1/payments.
+	if err := dto.ValidateCheckoutPaymentProviderSupported(req.Checkout.PaymentProvider); err != nil {
 		return nil, err
 	}
 

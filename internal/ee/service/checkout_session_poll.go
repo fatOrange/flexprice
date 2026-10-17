@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/flexprice/flexprice/internal/api/dto"
 	"github.com/flexprice/flexprice/internal/cache"
 	domainCheckout "github.com/flexprice/flexprice/internal/domain/checkout"
 	ierr "github.com/flexprice/flexprice/internal/errors"
@@ -192,6 +193,13 @@ func (s *checkoutSessionService) resolveCheckoutProvider(
 	ctx context.Context,
 	provider types.CheckoutPaymentProvider,
 ) (interfaces.CheckoutProvider, error) {
+	// Session execution is gated too: a WeChat Pay session could only have been
+	// created before this guard existed, and fulfilling one would create a
+	// subscription entity WeChat Pay can never be charged for. Existing-invoice
+	// WeChat payments go through POST /v1/payments.
+	if err := dto.ValidateCheckoutPaymentProviderSupported(provider); err != nil {
+		return nil, err
+	}
 	return s.IntegrationFactory.GetCheckoutProvider(
 		ctx,
 		provider,

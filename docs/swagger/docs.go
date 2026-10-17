@@ -22530,6 +22530,9 @@ const docTemplate = `{
             "properties": {
                 "stripe": {
                     "$ref": "#/definitions/StripePaymentGatewayOptions"
+                },
+                "wechatpay": {
+                    "$ref": "#/definitions/types.WechatPayOptions"
                 }
             }
         },
@@ -22566,6 +22569,10 @@ const docTemplate = `{
                 "error_message": {
                     "type": "string"
                 },
+                "expires_at": {
+                    "description": "ExpiresAt is when the gateway object stops accepting payment, persisted at\ncreation and never extended.",
+                    "type": "string"
+                },
                 "failed_at": {
                     "type": "string"
                 },
@@ -22589,6 +22596,14 @@ const docTemplate = `{
                 },
                 "metadata": {
                     "$ref": "#/definitions/types.Metadata"
+                },
+                "next_action": {
+                    "description": "NextAction is the customer-facing step to complete an asynchronous\npayment (WeChat Pay Native QR or JSAPI call parameters).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/types.PaymentAction"
+                        }
+                    ]
                 },
                 "payment_gateway": {
                     "type": "string"
@@ -29755,12 +29770,14 @@ const docTemplate = `{
             "enum": [
                 "razorpay",
                 "chargebee",
-                "stripe"
+                "stripe",
+                "wechatpay"
             ],
             "x-enum-varnames": [
                 "CheckoutPaymentProviderRazorpay",
                 "CheckoutPaymentProviderChargebee",
-                "CheckoutPaymentProviderStripe"
+                "CheckoutPaymentProviderStripe",
+                "CheckoutPaymentProviderWechatPay"
             ]
         },
         "types.CheckoutPaymentProviderConfig": {
@@ -31576,6 +31593,18 @@ const docTemplate = `{
         "types.PaymentAction": {
             "type": "object",
             "properties": {
+                "jsapi": {
+                    "description": "JSAPI carries the signed parameters to invoke WeChat Pay inside the WeChat\nbrowser for jsapi actions.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/types.WechatPayJSAPIParameters"
+                        }
+                    ]
+                },
+                "qr_content": {
+                    "description": "QRContent is the provider payload to render as a QR code for qr_code\nactions (WeChat Pay native). The customer scans it with the WeChat app.",
+                    "type": "string"
+                },
                 "type": {
                     "$ref": "#/definitions/types.PaymentActionType"
                 },
@@ -31588,11 +31617,15 @@ const docTemplate = `{
             "type": "string",
             "enum": [
                 "checkout_url",
-                "payment_link"
+                "payment_link",
+                "qr_code",
+                "jsapi"
             ],
             "x-enum-varnames": [
                 "PaymentActionTypeCheckoutURL",
-                "PaymentActionTypePaymentLink"
+                "PaymentActionTypePaymentLink",
+                "PaymentActionTypeQRCode",
+                "PaymentActionTypeJSAPI"
             ]
         },
         "types.PaymentBehavior": {
@@ -31630,7 +31663,8 @@ const docTemplate = `{
                 "moyasar",
                 "paddle",
                 "whop",
-                "chargebee"
+                "chargebee",
+                "wechatpay"
             ],
             "x-enum-varnames": [
                 "PaymentGatewayTypeStripe",
@@ -31639,7 +31673,8 @@ const docTemplate = `{
                 "PaymentGatewayTypeMoyasar",
                 "PaymentGatewayTypePaddle",
                 "PaymentGatewayTypeWhop",
-                "PaymentGatewayTypeChargebee"
+                "PaymentGatewayTypeChargebee",
+                "PaymentGatewayTypeWechatPay"
             ]
         },
         "types.PaymentMethodStatus": {
@@ -32363,6 +32398,7 @@ const docTemplate = `{
                 "moyasar",
                 "paddle",
                 "whop",
+                "wechatpay",
                 "tabs",
                 "aws_marketplace",
                 "gcp_marketplace",
@@ -32388,6 +32424,7 @@ const docTemplate = `{
                 "SecretProviderMoyasar",
                 "SecretProviderPaddle",
                 "SecretProviderWhop",
+                "SecretProviderWechatPay",
                 "SecretProviderTabs",
                 "SecretProviderAWSMarketplace",
                 "SecretProviderGCPMarketplace",
@@ -33724,6 +33761,40 @@ const docTemplate = `{
                 "WebhookEventCheckoutSessionExpired",
                 "WebhookEventEventRejected"
             ]
+        },
+        "types.WechatPayJSAPIParameters": {
+            "type": "object",
+            "properties": {
+                "appId": {
+                    "type": "string"
+                },
+                "nonceStr": {
+                    "type": "string"
+                },
+                "package": {
+                    "type": "string"
+                },
+                "paySign": {
+                    "type": "string"
+                },
+                "signType": {
+                    "type": "string"
+                },
+                "timeStamp": {
+                    "type": "string"
+                }
+            }
+        },
+        "types.WechatPayOptions": {
+            "type": "object",
+            "properties": {
+                "openid": {
+                    "type": "string"
+                },
+                "payment_type": {
+                    "type": "string"
+                }
+            }
         },
         "types.WindowSize": {
             "type": "string",

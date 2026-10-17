@@ -568,6 +568,17 @@ func ProviderBaseSyncConfig(provider SecretProvider) *SyncConfig {
 			Deal:         off,
 			Quote:        off,
 		}
+	case SecretProviderWechatPay:
+		return &SyncConfig{
+			Customer:     off,
+			Invoice:      off,
+			Payment:      off,
+			Plan:         off,
+			Subscription: off,
+			Price:        off,
+			Deal:         off,
+			Quote:        off,
+		}
 	case SecretProviderTabs:
 		return &SyncConfig{
 			Customer:     &EntitySyncConfig{Inbound: false, Outbound: true},

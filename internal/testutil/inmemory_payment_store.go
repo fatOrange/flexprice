@@ -424,6 +424,10 @@ func paymentFilterFn(ctx context.Context, p *payment.Payment, filter interface{}
 	}
 
 	// Apply specific filter conditions
+	if len(f.PaymentIDs) > 0 && !lo.Contains(f.PaymentIDs, p.ID) {
+		return false
+	}
+
 	if f.DestinationID != nil && p.DestinationID != *f.DestinationID {
 		return false
 	}
@@ -432,7 +436,25 @@ func paymentFilterFn(ctx context.Context, p *payment.Payment, filter interface{}
 		return false
 	}
 
+	if f.PaymentMethodType != nil && string(p.PaymentMethodType) != *f.PaymentMethodType {
+		return false
+	}
+
 	if f.PaymentStatus != nil && string(p.PaymentStatus) != *f.PaymentStatus {
+		return false
+	}
+
+	// Gateway handle filters mirror ent's equality predicates, which match only
+	// rows that actually carry the value: a nil pointer on the row never matches.
+	if f.PaymentGateway != nil && (p.PaymentGateway == nil || *p.PaymentGateway != *f.PaymentGateway) {
+		return false
+	}
+
+	if f.GatewayPaymentID != nil && (p.GatewayPaymentID == nil || *p.GatewayPaymentID != *f.GatewayPaymentID) {
+		return false
+	}
+
+	if f.GatewayTrackingID != nil && (p.GatewayTrackingID == nil || *p.GatewayTrackingID != *f.GatewayTrackingID) {
 		return false
 	}
 

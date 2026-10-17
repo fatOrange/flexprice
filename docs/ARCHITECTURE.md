@@ -92,6 +92,15 @@ Controlled by **`FLEXPRICE_DEPLOYMENT_MODE`** (see [`REPO_MAP.md`](REPO_MAP.md) 
 
 Producers enqueue onto configured **system event** Kafka topic; **`internal/webhook`** consumes, builds payloads (pull model against services), emits via Svix or native transports per configuration.
 
+### Existing-invoice payments (WeChat Pay)
+
+Manual one-off invoice payments are created directly through `POST /v1/payments`; the connector does not create subscriptions or hold entitlement.
+
+- **Adapter** — `internal/integration/wechatpay` wraps the official `github.com/wechatpay-apiv3/wechatpay-go` SDK (request signing, platform-signature verification, AES-GCM notification decryption). Credentials live in a tenant/environment-scoped `wechatpay` connection (encrypted at rest, decrypted per request); the HTTP client is injectable for tests, with no fake production endpoint or fallback.
+- **Service** — `internal/ee/service/wechatpay*.go` routes the signed callback and the signed status query through one settlement path that reuses `PaymentLifecycle`, `RefundService`, and the existing outbound events. Admission and settlement serialize on an invoice row lock, and event publishing is deferred to the transaction commit through the existing `types.RegisterPostCommit` hooks — no new Kafka topics, Temporal schedules, or delivery pipeline.
+- **API** — creation via `POST /v1/payments` (`destination_type=INVOICE`, `payment_method_type=PAYMENT_LINK`, `payment_gateway=wechatpay`); the public callback is `POST /v1/webhooks/wechatpay/{tenant_id}/{environment_id}` (`internal/api/v1/wechatpay.go`). `GET /v1/payments/:id` and `GET /v1/refunds/:id` fall back to a provider query when a callback is dropped.
+- **Scope** — Native QR and JSAPI only: no H5/app/mini-program channels, wallet top-ups, autocharge/mandates, or login/OAuth; checkout sessions reject `wechatpay` as a provider. Business-app entitlement stays outside FlexPrice. See [`FLOWS/billing.md`](FLOWS/billing.md) and [`FLOWS/webhook-processing.md`](FLOWS/webhook-processing.md).
+
 ---
 
 ## Repository conventions

@@ -54,6 +54,7 @@ type Handlers struct {
 	FXRate                   *v1.FXRateHandler
 	Coupon                   *v1.CouponHandler
 	Webhook                  *v1.WebhookHandler
+	WechatPay                v1.WechatPayHandler
 	Addon                    *v1.AddonHandler
 	Integration              *v1.IntegrationHandler
 	Paddle                   *v1.PaddleHandler
@@ -786,6 +787,8 @@ func NewRouter(
 		webhooks.POST("/zoho_books/:tenant_id/:environment_id", handlers.Webhook.HandleZohoBooksWebhook)
 		// Whop webhook endpoint: POST /v1/webhooks/whop/{tenant_id}/{environment_id}
 		webhooks.POST("/whop/:tenant_id/:environment_id", handlers.Webhook.HandleWhopWebhook)
+		// WeChat Pay signed callback: POST /v1/webhooks/wechatpay/{tenant_id}/{environment_id}
+		webhooks.POST("/wechatpay/:tenant_id/:environment_id", handlers.WechatPay.HandleCallback)
 	}
 
 	// Settings routes.

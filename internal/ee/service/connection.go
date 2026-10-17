@@ -373,6 +373,36 @@ func (s *connectionService) encryptMetadata(encryptedSecretData types.Connection
 		}
 		encryptedMetadata.Whop = whopMeta
 
+	case types.SecretProviderWechatPay:
+		if encryptedSecretData.WechatPay == nil {
+			s.Logger.Info(context.Background(), "WeChat Pay metadata is nil, cannot encrypt", "provider_type", providerType)
+			return types.ConnectionMetadata{}, ierr.NewError("WeChat Pay metadata is required").
+				WithHint("WeChat Pay connection requires encrypted_secret_data with appid, mchid, merchant_certificate_serial_number, merchant_private_key, api_v3_key, platform_public_key, platform_public_key_id and notify_url").
+				Mark(ierr.ErrValidation)
+		}
+		// Only the merchant private key and the APIv3 key are secrets: the first
+		// signs requests, the second decrypts callbacks. The remaining fields are
+		// public configuration (appid, mchid, certificate serial, platform public
+		// key and its id, notify URL) and are stored in the clear.
+		encryptedMerchantPrivateKey, err := s.encryptionService.Encrypt(encryptedSecretData.WechatPay.MerchantPrivateKey)
+		if err != nil {
+			return types.ConnectionMetadata{}, err
+		}
+		encryptedAPIv3Key, err := s.encryptionService.Encrypt(encryptedSecretData.WechatPay.APIv3Key)
+		if err != nil {
+			return types.ConnectionMetadata{}, err
+		}
+		encryptedMetadata.WechatPay = &types.WechatPayConnectionMetadata{
+			AppID:                           encryptedSecretData.WechatPay.AppID,
+			MerchantID:                      encryptedSecretData.WechatPay.MerchantID,
+			MerchantCertificateSerialNumber: encryptedSecretData.WechatPay.MerchantCertificateSerialNumber,
+			MerchantPrivateKey:              encryptedMerchantPrivateKey,
+			APIv3Key:                        encryptedAPIv3Key,
+			PlatformPublicKey:               encryptedSecretData.WechatPay.PlatformPublicKey,
+			PlatformPublicKeyID:             encryptedSecretData.WechatPay.PlatformPublicKeyID,
+			NotifyURL:                       encryptedSecretData.WechatPay.NotifyURL,
+		}
+
 	case types.SecretProviderTabs:
 		if encryptedSecretData.Tabs == nil {
 			s.Logger.Info(context.Background(), "Tabs metadata is nil, cannot encrypt", "provider_type", providerType)
@@ -733,6 +763,20 @@ func (s *connectionService) CreateConnection(ctx context.Context, req dto.Create
 				Mark(ierr.ErrValidation)
 		}
 		if err := conn.EncryptedSecretData.Whop.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
+	// WeChat Pay: validate the merchant configuration on direct creation. The
+	// notify URL check in particular must run on the plaintext request — once
+	// stored, the two secret fields are ciphertext.
+	if conn.ProviderType == types.SecretProviderWechatPay {
+		if conn.EncryptedSecretData.WechatPay == nil {
+			return nil, ierr.NewError("wechatpay connection requires appid, mchid, merchant_certificate_serial_number, merchant_private_key, api_v3_key, platform_public_key, platform_public_key_id and notify_url").
+				WithHint("encrypted_secret_data.wechatpay with all merchant fields is required").
+				Mark(ierr.ErrValidation)
+		}
+		if err := conn.EncryptedSecretData.WechatPay.Validate(); err != nil {
 			return nil, err
 		}
 	}
@@ -1098,6 +1142,59 @@ func (s *connectionService) UpdateConnection(ctx context.Context, id string, req
 		}
 		conn.EncryptedSecretData.Chargebee.WebhookUsername = encUser
 		conn.EncryptedSecretData.Chargebee.WebhookPassword = encPass
+	}
+
+	// WeChat Pay: merge only the fields provided. Secret fields are re-encrypted
+	// so a merchant key rotation never stores plaintext; configuration fields
+	// (including notify_url) merge verbatim.
+	if req.EncryptedSecretData != nil && req.EncryptedSecretData.WechatPay != nil {
+		if conn.ProviderType != types.SecretProviderWechatPay {
+			return nil, ierr.NewError("wechatpay secret update is only valid for wechatpay connections").
+				Mark(ierr.ErrValidation)
+		}
+		if conn.EncryptedSecretData.WechatPay == nil {
+			return nil, ierr.NewError("WeChat Pay connection metadata is missing").
+				Mark(ierr.ErrValidation)
+		}
+		stored := conn.EncryptedSecretData.WechatPay
+		incoming := req.EncryptedSecretData.WechatPay
+		for _, field := range []struct {
+			value  string
+			target *string
+		}{
+			{incoming.MerchantPrivateKey, &stored.MerchantPrivateKey},
+			{incoming.APIv3Key, &stored.APIv3Key},
+		} {
+			if field.value == "" {
+				continue
+			}
+			encrypted, encErr := s.encryptionService.Encrypt(field.value)
+			if encErr != nil {
+				s.Logger.Error(ctx, "failed to encrypt WeChat Pay secret", "error", encErr, "connection_id", id)
+				return nil, encErr
+			}
+			*field.target = encrypted
+		}
+		for _, field := range []struct {
+			value  string
+			target *string
+		}{
+			{incoming.AppID, &stored.AppID},
+			{incoming.MerchantID, &stored.MerchantID},
+			{incoming.MerchantCertificateSerialNumber, &stored.MerchantCertificateSerialNumber},
+			{incoming.PlatformPublicKey, &stored.PlatformPublicKey},
+			{incoming.PlatformPublicKeyID, &stored.PlatformPublicKeyID},
+		} {
+			if field.value != "" {
+				*field.target = field.value
+			}
+		}
+		if incoming.NotifyURL != "" {
+			if notifyErr := types.ValidateWechatPayNotifyURL(incoming.NotifyURL); notifyErr != nil {
+				return nil, notifyErr
+			}
+			stored.NotifyURL = incoming.NotifyURL
+		}
 	}
 
 	conn.UpdatedAt = time.Now()

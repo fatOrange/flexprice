@@ -42,6 +42,7 @@ import (
 	"github.com/flexprice/flexprice/internal/integration/stripe"
 	"github.com/flexprice/flexprice/internal/integration/stripe/webhook"
 	"github.com/flexprice/flexprice/internal/integration/tabs"
+	"github.com/flexprice/flexprice/internal/integration/wechatpay"
 	"github.com/flexprice/flexprice/internal/integration/whop"
 	whopwebhook "github.com/flexprice/flexprice/internal/integration/whop/webhook"
 	"github.com/flexprice/flexprice/internal/integration/zoho"
@@ -88,6 +89,11 @@ type Factory struct {
 	// paymentMethodProvider, when set, is returned by GetPaymentMethodProvider instead of
 	// constructing a live adapter. Tests use this; production never sets it.
 	paymentMethodProvider interfaces.PaymentMethodProvider
+
+	// wechatPayGateway, when set, is returned by GetWechatPayClient instead of
+	// building a live client, and backs the WeChat Pay checkout/refund adapters.
+	// Tests use this; production never sets it.
+	wechatPayGateway wechatpay.Gateway
 }
 
 // NewFactory creates a new integration factory
@@ -1657,6 +1663,12 @@ func (f *Factory) GetRefundProvider(ctx context.Context, gateway types.PaymentGa
 			return nil, err
 		}
 		return &chargebee.RefundAdapter{Client: i.Client, Logger: f.logger}, nil
+	case types.PaymentGatewayTypeWechatPay:
+		client, err := f.GetWechatPayClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return wechatpay.NewRefundAdapter(client), nil
 	default:
 		return nil, ierr.NewError("gateway refunds are not supported for this provider").
 			WithHintf("%s cannot issue gateway refunds", gateway).
@@ -1675,6 +1687,28 @@ func (f *Factory) SetPaymentMethodProvider(provider interfaces.PaymentMethodProv
 // Tests use this when no live gateway connection exists. Production never calls it.
 func (f *Factory) SetCheckoutProvider(provider interfaces.CheckoutProvider) {
 	f.checkoutProvider = provider
+}
+
+// GetWechatPayClient returns the WeChat Pay gateway client for the current
+// tenant and environment. It fails when no WeChat Pay connection is published
+// so callers surface a configuration error before touching an order.
+func (f *Factory) GetWechatPayClient(ctx context.Context) (wechatpay.Gateway, error) {
+	if f.wechatPayGateway != nil {
+		return f.wechatPayGateway, nil
+	}
+	if _, err := f.connectionRepo.GetByProvider(ctx, types.SecretProviderWechatPay); err != nil {
+		return nil, ierr.WithError(err).
+			WithHint("WeChat Pay connection is not configured for this environment").
+			Error()
+	}
+	return wechatpay.NewClient(f.connectionRepo, f.encryptionService, f.logger), nil
+}
+
+// SetWechatPayGateway overrides GetWechatPayClient with a fixed gateway, which
+// also backs the WeChat Pay checkout and refund adapters. Tests use this when no
+// live merchant connection exists. Production never calls it.
+func (f *Factory) SetWechatPayGateway(gateway wechatpay.Gateway) {
+	f.wechatPayGateway = gateway
 }
 
 // GetCheckoutProvider returns the CheckoutProvider adapter for the given payment provider.
@@ -1713,6 +1747,12 @@ func (f *Factory) GetCheckoutProvider(ctx context.Context, provider types.Checko
 			InvoiceSvc:  invoiceSvc,
 			Logger:      f.logger,
 		}, nil
+	case types.CheckoutPaymentProviderWechatPay:
+		client, err := f.GetWechatPayClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return wechatpay.NewCheckoutAdapter(client), nil
 	default:
 		return nil, ierr.NewError("payment provider not supported for checkout").
 			WithHintf("%s does not support hosted checkout sessions", provider).

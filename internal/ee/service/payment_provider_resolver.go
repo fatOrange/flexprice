@@ -39,6 +39,11 @@ var gatewayCapabilities = map[types.PaymentGatewayType][]types.IntegrationCapabi
 	types.PaymentGatewayTypeNomod: {
 		types.IntegrationCapabilityPaymentLink,
 	},
+	// WeChat Pay drives manual existing-invoice payments only; checkout-session
+	// and wallet-topup flows reject it, so it advertises payment links alone.
+	types.PaymentGatewayTypeWechatPay: {
+		types.IntegrationCapabilityPaymentLink,
+	},
 }
 
 type PaymentProviderResolver struct {

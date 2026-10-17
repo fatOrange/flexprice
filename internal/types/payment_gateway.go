@@ -15,12 +15,13 @@ const (
 	PaymentGatewayTypePaddle    PaymentGatewayType = "paddle"
 	PaymentGatewayTypeWhop      PaymentGatewayType = "whop"
 	PaymentGatewayTypeChargebee PaymentGatewayType = "chargebee"
+	PaymentGatewayTypeWechatPay PaymentGatewayType = "wechatpay"
 )
 
 // Validate validates the payment gateway type
 func (p PaymentGatewayType) Validate() error {
 	switch p {
-	case PaymentGatewayTypeStripe, PaymentGatewayTypeRazorpay, PaymentGatewayTypeNomod, PaymentGatewayTypeMoyasar, PaymentGatewayTypePaddle, PaymentGatewayTypeWhop, PaymentGatewayTypeChargebee:
+	case PaymentGatewayTypeStripe, PaymentGatewayTypeRazorpay, PaymentGatewayTypeNomod, PaymentGatewayTypeMoyasar, PaymentGatewayTypePaddle, PaymentGatewayTypeWhop, PaymentGatewayTypeChargebee, PaymentGatewayTypeWechatPay:
 		return nil
 	default:
 		return ierr.NewError("invalid payment gateway type").
@@ -34,6 +35,7 @@ func (p PaymentGatewayType) Validate() error {
 					PaymentGatewayTypeMoyasar,
 					PaymentGatewayTypePaddle,
 					PaymentGatewayTypeWhop,
+					PaymentGatewayTypeWechatPay,
 				},
 			}).
 			Mark(ierr.ErrValidation)
@@ -87,6 +89,8 @@ func PaymentGatewayFromSecretProvider(p SecretProvider) (PaymentGatewayType, boo
 		return PaymentGatewayTypeWhop, true
 	case SecretProviderChargebee:
 		return PaymentGatewayTypeChargebee, true
+	case SecretProviderWechatPay:
+		return PaymentGatewayTypeWechatPay, true
 	default:
 		return "", false
 	}

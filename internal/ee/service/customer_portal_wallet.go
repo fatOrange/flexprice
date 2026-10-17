@@ -169,15 +169,26 @@ func (s *customerPortalService) UpdateAutoTopup(ctx context.Context, walletID st
 }
 
 // resolveCheckoutProvider turns an optional caller choice into the one gateway that
-// can host this checkout, then back into the checkout vocabulary.
+// can host this checkout, then back into the checkout vocabulary. WeChat Pay is
+// rejected at selection: wallet top-ups create their entities before payment,
+// and it has no wallet-top-up payment flow.
 func (s *customerPortalService) resolveCheckoutProvider(
 	ctx context.Context,
 	customerID string,
 	requested *types.PaymentGatewayType,
 ) (types.CheckoutPaymentProvider, error) {
+	if requested != nil {
+		if err := dto.ValidateCheckoutPaymentProviderSupported(types.CheckoutPaymentProvider(*requested)); err != nil {
+			return "", err
+		}
+	}
+
 	resolved, err := NewPaymentProviderResolver(s.ServiceParams).
 		ResolveProvider(ctx, customerID, types.IntegrationCapabilityCheckout, lo.FromPtr(requested))
 	if err != nil {
+		return "", err
+	}
+	if err := dto.ValidateCheckoutPaymentProviderSupported(types.CheckoutPaymentProvider(resolved)); err != nil {
 		return "", err
 	}
 

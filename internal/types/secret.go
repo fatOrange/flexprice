@@ -43,6 +43,7 @@ const (
 	SecretProviderMoyasar          SecretProvider = "moyasar"
 	SecretProviderPaddle           SecretProvider = "paddle"
 	SecretProviderWhop             SecretProvider = "whop"
+	SecretProviderWechatPay        SecretProvider = "wechatpay"
 	SecretProviderTabs             SecretProvider = "tabs"
 	SecretProviderAWSMarketplace   SecretProvider = "aws_marketplace"
 	SecretProviderGCPMarketplace   SecretProvider = "gcp_marketplace"
@@ -64,6 +65,7 @@ func (p SecretProvider) Validate() error {
 		SecretProviderMoyasar,
 		SecretProviderPaddle,
 		SecretProviderWhop,
+		SecretProviderWechatPay,
 		SecretProviderTabs,
 		SecretProviderAWSMarketplace,
 		SecretProviderGCPMarketplace,

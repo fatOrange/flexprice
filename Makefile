@@ -212,6 +212,15 @@ test-coverage: install-typst
 	$(call run-go-test,-race -coverprofile=coverage.out ./internal/... ./cmd/server)
 	go tool cover -html=coverage.out -o coverage.html
 
+# Local WeChat Pay acceptance smoke. Boots the real HTTP router, services and
+# in-memory domain stores against an isolated, signed simulation of the WeChat
+# Pay APIv3 gateway: real SDK signing/verification, encrypted callbacks, and
+# fake merchant keys generated per run. No live WeChat network, no real
+# credentials. Exits non-zero when any lifecycle check fails.
+.PHONY: wechatpay-smoke
+wechatpay-smoke:
+	go run ./cmd/wechatpay-smoke
+
 # Database related targets
 .PHONY: init-db migrate-postgres migrate-clickhouse seed-db migrate-ent
 

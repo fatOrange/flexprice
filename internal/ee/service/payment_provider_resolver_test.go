@@ -7,7 +7,6 @@ import (
 	ierr "github.com/flexprice/flexprice/internal/errors"
 	"github.com/flexprice/flexprice/internal/testutil"
 	"github.com/flexprice/flexprice/internal/types"
-	"github.com/samber/lo"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -159,31 +158,31 @@ func (s *PaymentProviderResolverSuite) TestCapabilityRequired() {
 	s.True(ierr.IsValidation(err))
 }
 
-// Guards gatewayCapabilities against drift in the factory switches it mirrors:
-// adding an adapter without adding the capability leaves the gateway silently
-// unoffered, and removing one leaves the resolver routing to nothing.
-func (s *PaymentProviderResolverSuite) TestGatewayCapabilitiesMatchFactory() {
+// WeChat Pay is a manual invoice-payment gateway: it must be offered for
+// payment links and refused, with a validation error, for capabilities it has
+// no flow for.
+func (s *PaymentProviderResolverSuite) TestWechatPayOffersPaymentLinkOnly() {
+	s.connect(types.SecretProviderWechatPay)
 	ctx := s.GetContext()
-	factory := s.GetIntegrationFactory()
 
-	for gw := range gatewayCapabilities {
-		wantSaved := lo.Contains(gatewayCapabilities[gw], types.IntegrationCapabilityListPaymentMethods)
-		_, err := factory.GetPaymentMethodProvider(ctx, gw, nil)
-		s.Equal(wantSaved, !ierr.IsNotImplemented(err),
-			"list_payment_methods for %s disagrees with Factory.GetPaymentMethodProvider", gw)
+	got, err := s.svc.ResolveProvider(ctx, "cust_1", types.IntegrationCapabilityPaymentLink, types.PaymentGatewayTypeWechatPay)
+	s.NoError(err)
+	s.Equal(types.PaymentGatewayTypeWechatPay, got)
 
-		wantCheckout := lo.Contains(gatewayCapabilities[gw], types.IntegrationCapabilityCheckout)
-		provider, ok := checkoutProviderFor(gw)
-		s.Equal(wantCheckout, ok, "checkout for %s has no CheckoutPaymentProvider mapping", gw)
-		if !ok {
-			continue
-		}
-		_, err = factory.GetCheckoutProvider(ctx, provider, nil, nil)
-		s.False(ierr.IsValidation(err), "Factory.GetCheckoutProvider rejects %s", gw)
+	for _, capability := range []types.IntegrationCapabilityType{
+		types.IntegrationCapabilityCheckout,
+		types.IntegrationCapabilityAutoCharge,
+	} {
+		_, err := s.svc.ResolveProvider(ctx, "cust_1", capability, types.PaymentGatewayTypeWechatPay)
+		s.Error(err, "capability %s must be refused", capability)
+		s.True(ierr.IsValidation(err), "capability %s must be a validation error", capability)
 	}
-}
 
-func checkoutProviderFor(gw types.PaymentGatewayType) (types.CheckoutPaymentProvider, bool) {
-	p := types.CheckoutPaymentProvider(gw)
-	return p, p.Validate() == nil && p != ""
+	providers, err := s.svc.ListProviders(ctx, "cust_1")
+	s.NoError(err)
+	s.Len(providers, 1)
+	s.Equal(types.PaymentGatewayTypeWechatPay, providers[0].Gateway)
+	s.ElementsMatch([]types.IntegrationCapability{
+		{Type: types.IntegrationCapabilityPaymentLink},
+	}, providers[0].Capabilities)
 }

@@ -52,6 +52,7 @@ require (
 	github.com/svix/svix-webhooks v1.99.1
 	github.com/swaggo/swag/v2 v2.0.0-rc6
 	github.com/teris-io/shortid v0.0.0-20220617161101-71ec9f2aa569
+	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	github.com/xdg-go/scram v1.2.0
 	go.opentelemetry.io/contrib/bridges/otelzap v0.20.1
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.71.0

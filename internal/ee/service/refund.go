@@ -177,6 +177,14 @@ func (s *refundService) allocateAcrossPayments(
 		refundForThisPayment := decimal.Min(remainingPaymentRefundCapacity, remainingAmountToRefund)
 		remainingAmountToRefund = remainingAmountToRefund.Sub(refundForThisPayment)
 
+		// WeChat Pay returns money only as the full original transaction. This is
+		// rejected while rows are still being planned, so a partial request rolls
+		// the whole credit-note finalize back instead of reserving money the
+		// gateway would refuse to return.
+		if err := validateWechatPayFullRefund(p, refundForThisPayment, alloc.allowGateway); err != nil {
+			return nil, err
+		}
+
 		row := s.newRow(ctx, inv, refundForThisPayment, alloc, len(rows))
 		row.PaymentID = lo.ToPtr(p.ID)
 
@@ -602,6 +610,12 @@ func (s *refundService) Fail(ctx context.Context, refundID, reason string) error
 		return nil
 	}
 
+	// WeChat Pay returns money only to the original source: a confirmed failed
+	// gateway refund stays terminal instead of silently becoming a wallet credit.
+	if failed.PaymentGateway != nil && types.PaymentGatewayType(*failed.PaymentGateway) == types.PaymentGatewayTypeWechatPay {
+		return nil
+	}
+
 	fallback, err := s.refundToWalletAsFallbackToFailure(ctx, failed.ID)
 	if err != nil {
 		return err
@@ -685,6 +699,14 @@ func (s *refundService) GetRefund(ctx context.Context, id string) (*dto.RefundRe
 	if err != nil {
 		return nil, err
 	}
+
+	// Best-effort reconciliation for in-flight gateway refunds whose callback was
+	// dropped or delayed; errors are logged and the stored row is returned.
+	row, err = s.syncRefundStatusFromGateway(ctx, row)
+	if err != nil {
+		s.Logger.Error(ctx, "failed to reconcile refund with gateway", "refund_id", row.ID, "error", err)
+	}
+
 	return dto.NewRefundResponse(row), nil
 }
 
@@ -717,11 +739,23 @@ func (s *refundService) publishSystemEvent(ctx context.Context, eventName types.
 		EntityType:    types.SystemEntityTypeRefund,
 		EntityID:      refundID,
 	}
-	if err := s.WebhookPublisher.PublishWebhook(ctx, event); err != nil {
-		s.Logger.Error(ctx, "failed to publish refund webhook event",
-			"error", err,
-			"event_name", eventName,
-			"refund_id", refundID)
+
+	// The webhook consumer reads the refund at delivery time, so a publish
+	// fired mid-transaction can serve the pre-settlement state, and a rollback
+	// would announce a transition that never committed. Queue it behind the
+	// commit; with no transaction open, keep the immediate path. The queued
+	// copy runs after the commit has returned the connection to the pool, so it
+	// must not carry the transaction.
+	publish := func(publishCtx context.Context) {
+		if err := s.WebhookPublisher.PublishWebhook(publishCtx, event); err != nil {
+			s.Logger.Error(publishCtx, "failed to publish refund webhook event",
+				"error", err,
+				"event_name", eventName,
+				"refund_id", refundID)
+		}
+	}
+	if !types.RegisterPostCommit(ctx, func() { publish(types.WithoutDBTransaction(ctx)) }) {
+		publish(ctx)
 	}
 }
 
@@ -769,6 +803,15 @@ func (s *refundService) RetryRefund(ctx context.Context, id string) (*dto.Refund
 		return s.GetRefund(ctx, row.ID)
 
 	case types.RefundStatusFailed:
+		// WeChat Pay returns money only to the original source: a failed gateway
+		// refund is not replaced by a wallet credit here. Recovery for an
+		// ABNORMAL/CLOSED refund is handled at the merchant platform.
+		if row.PaymentGateway != nil && types.PaymentGatewayType(*row.PaymentGateway) == types.PaymentGatewayTypeWechatPay {
+			return nil, ierr.NewError("wechatpay refunds cannot be retried automatically").
+				WithHint("WeChat Pay refunds return to the original source only; resolve the refund at the merchant platform and reconcile manually").
+				WithReportableDetails(map[string]any{"refund_id": row.ID}).
+				Mark(ierr.ErrValidation)
+		}
 		fallback, err := s.refundToWalletAsFallbackToFailure(ctx, row.ID)
 		if err != nil {
 			return nil, err

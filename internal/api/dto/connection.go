@@ -312,6 +312,36 @@ func ConvertFlatMetadataToStructured(flatMetadata map[string]interface{}, provid
 			Whop: whopMetadata,
 		}
 
+	case types.SecretProviderWechatPay:
+		wechatPayMetadata := &types.WechatPayConnectionMetadata{}
+		if v, ok := flatMetadata["appid"].(string); ok {
+			wechatPayMetadata.AppID = v
+		}
+		if v, ok := flatMetadata["mchid"].(string); ok {
+			wechatPayMetadata.MerchantID = v
+		}
+		if v, ok := flatMetadata["merchant_certificate_serial_number"].(string); ok {
+			wechatPayMetadata.MerchantCertificateSerialNumber = v
+		}
+		if v, ok := flatMetadata["merchant_private_key"].(string); ok {
+			wechatPayMetadata.MerchantPrivateKey = v
+		}
+		if v, ok := flatMetadata["api_v3_key"].(string); ok {
+			wechatPayMetadata.APIv3Key = v
+		}
+		if v, ok := flatMetadata["platform_public_key"].(string); ok {
+			wechatPayMetadata.PlatformPublicKey = v
+		}
+		if v, ok := flatMetadata["platform_public_key_id"].(string); ok {
+			wechatPayMetadata.PlatformPublicKeyID = v
+		}
+		if v, ok := flatMetadata["notify_url"].(string); ok {
+			wechatPayMetadata.NotifyURL = v
+		}
+		return types.ConnectionMetadata{
+			WechatPay: wechatPayMetadata,
+		}
+
 	case types.SecretProviderZohoBooks:
 		zohoMetadata := &types.ZohoBooksConnectionMetadata{}
 		if v, ok := flatMetadata["client_id"].(string); ok {
@@ -387,7 +417,7 @@ type UpdateConnectionRequest struct {
 func updateRequestMetadataStructPopulated(cm types.ConnectionMetadata) bool {
 	return cm.Stripe != nil || cm.S3 != nil || cm.HubSpot != nil || cm.Razorpay != nil ||
 		cm.Chargebee != nil || cm.QuickBooks != nil || cm.Nomod != nil || cm.Moyasar != nil ||
-		cm.Paddle != nil || cm.ZohoBooks != nil || cm.Whop != nil || cm.Tabs != nil || cm.AWSMarketplace != nil || cm.GCPMarketplace != nil || cm.Generic != nil || cm.Settings != nil
+		cm.Paddle != nil || cm.ZohoBooks != nil || cm.Whop != nil || cm.WechatPay != nil || cm.Tabs != nil || cm.AWSMarketplace != nil || cm.GCPMarketplace != nil || cm.Generic != nil || cm.Settings != nil
 }
 
 // UnmarshalJSON accepts either nested encrypted_secret_data (e.g. {"zoho_books":{"webhook_secret":"..."}})

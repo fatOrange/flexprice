@@ -60,6 +60,15 @@ func (s *paymentService) CreatePayment(ctx context.Context, req *dto.CreatePayme
 			Mark(ierr.ErrValidation)
 	}
 
+	// WeChat Pay is a manual, existing-invoice flow with its own admission: it
+	// serializes on the invoice row, validates the authoritative invoice there,
+	// and commits its payment row before any network call. WeChat-specific
+	// wiring lives with the gateway's service files. It runs before the generic
+	// invoice read so the unlocked read is never the basis for a payable order.
+	if p.PaymentGateway != nil && types.PaymentGatewayType(*p.PaymentGateway) == types.PaymentGatewayTypeWechatPay {
+		return s.createWechatPayIntent(ctx, req, p)
+	}
+
 	// For INVOICE destination, validate the invoice and its payment eligibility.
 	// For CUSTOMER destination validate the customer exists.
 	var invoice *invoice.Invoice
@@ -171,14 +180,7 @@ func (s *paymentService) CreatePayment(ctx context.Context, req *dto.CreatePayme
 	// payment_gateway (gets resolved later in ProcessPayment). Callers can pass
 	// their own IdempotencyKey to opt out (installments, etc).
 	if p.IdempotencyKey == "" {
-		p.IdempotencyKey = s.idempGen.GenerateKey(idempotency.ScopePayment, map[string]interface{}{
-			"invoice_id":          p.DestinationID,
-			"amount":              p.Amount,
-			"currency":            p.Currency,
-			"payment_method_type": p.PaymentMethodType,
-			"payment_method_id":   p.PaymentMethodID,
-			"payment_gateway":     lo.FromPtr(p.PaymentGateway),
-		})
+		p.IdempotencyKey = s.idempGen.GenerateKey(idempotency.ScopePayment, paymentIdempotencyKeyInputs(p, req))
 	}
 
 	if err := p.Validate(); err != nil {
@@ -220,6 +222,26 @@ func (s *paymentService) CreatePayment(ctx context.Context, req *dto.CreatePayme
 	}
 
 	return dto.NewPaymentResponse(p), nil
+}
+
+// paymentIdempotencyKeyInputs is the intent identity hashed into an
+// auto-generated idempotency key. The WeChat Pay channel is part of it: the
+// same invoice and amount requested as a QR flow and as a JSAPI flow are two
+// different orders and must not collapse into one row.
+func paymentIdempotencyKeyInputs(p *payment.Payment, req *dto.CreatePaymentRequest) map[string]interface{} {
+	keyParts := map[string]interface{}{
+		"invoice_id":          p.DestinationID,
+		"amount":              p.Amount,
+		"currency":            p.Currency,
+		"payment_method_type": p.PaymentMethodType,
+		"payment_method_id":   p.PaymentMethodID,
+		"payment_gateway":     lo.FromPtr(p.PaymentGateway),
+	}
+	if req.GatewayOptions != nil && req.GatewayOptions.WechatPay != nil {
+		keyParts["wechatpay_payment_type"] = req.GatewayOptions.WechatPay.EffectivePaymentType()
+		keyParts["wechatpay_openid"] = req.GatewayOptions.WechatPay.OpenID
+	}
+	return keyParts
 }
 
 func (s *paymentService) validateInvoicePaymentEligibility(ctx context.Context, invoice *invoice.Invoice, p *dto.CreatePaymentRequest) error {
@@ -757,8 +779,20 @@ func (s *paymentService) publishSystemEvent(ctx context.Context, eventName types
 		EntityType:    types.SystemEntityTypePayment,
 		EntityID:      paymentID,
 	}
-	if err := s.WebhookPublisher.PublishWebhook(ctx, webhookEvent); err != nil {
-		s.Logger.Error(ctx, "failed to publish webhook event", "event_name", webhookEvent.EventName, "error", err)
+
+	// The webhook consumer reads the payment at delivery time, so a publish
+	// fired mid-transaction can serve the pre-settlement state, and a rollback
+	// would announce a transition that never committed. Queue it behind the
+	// commit; with no transaction open, keep the immediate path. The queued
+	// copy runs after the commit has returned the connection to the pool, so it
+	// must not carry the transaction.
+	publish := func(publishCtx context.Context) {
+		if err := s.WebhookPublisher.PublishWebhook(publishCtx, webhookEvent); err != nil {
+			s.Logger.Error(publishCtx, "failed to publish webhook event", "event_name", webhookEvent.EventName, "error", err)
+		}
+	}
+	if !types.RegisterPostCommit(ctx, func() { publish(types.WithoutDBTransaction(ctx)) }) {
+		publish(ctx)
 	}
 }
 
@@ -823,13 +857,38 @@ func (s *paymentService) PaymentExistsByGatewayPaymentID(ctx context.Context, ga
 
 // TODO: extract into a GatewayStatusSyncer when supporting more gateways or throttling
 func (s *paymentService) syncPaymentStatusFromGateway(ctx context.Context, p *payment.Payment) (*payment.Payment, error) {
-	if p.PaymentStatus != types.PaymentStatusPending && p.PaymentStatus != types.PaymentStatusProcessing {
-		return p, nil
-	}
 	if p.PaymentGateway == nil {
 		return p, nil
 	}
 	if s.IntegrationFactory == nil {
+		return p, nil
+	}
+
+	// WeChat Pay owns query-before-close after its fixed deadline, which the
+	// generic status mapping cannot express. Every open WeChat Pay payment goes
+	// through the dedicated reconciler — including INITIATED ones whose order
+	// handle was bound before a network call that may have timed out — so the
+	// callback and the query share one settlement path.
+	if types.PaymentGatewayType(*p.PaymentGateway) == types.PaymentGatewayTypeWechatPay {
+		// A read that happens inside an in-flight settlement must stay passive:
+		// settlement itself reads the payment through this service, and
+		// re-querying there would recurse into another settlement.
+		if isWechatPaySettling(ctx) {
+			return p, nil
+		}
+		if lo.FromPtr(p.GatewayTrackingID) == "" {
+			return p, nil
+		}
+		updated, err := newWechatPayService(s.ServiceParams).reconcilePayment(ctx, p)
+		if err != nil {
+			s.Logger.Error(ctx, "failed to reconcile wechatpay payment",
+				"payment_id", p.ID, "error", err)
+			return p, err
+		}
+		return updated, nil
+	}
+
+	if p.PaymentStatus != types.PaymentStatusPending && p.PaymentStatus != types.PaymentStatusProcessing {
 		return p, nil
 	}
 

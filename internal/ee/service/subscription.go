@@ -4685,8 +4685,20 @@ func (s *subscriptionService) publishSystemEvent(ctx context.Context, eventName 
 		EntityType:    types.SystemEntityTypeSubscription,
 		EntityID:      subscriptionID,
 	}
-	if err := s.WebhookPublisher.PublishWebhook(ctx, webhookEvent); err != nil {
-		s.Logger.Error(ctx, "failed to publish webhook event", "event_name", webhookEvent.EventName, "error", err)
+
+	// The webhook consumer reads the subscription at delivery time, so a
+	// publish fired mid-transaction can serve the pre-activation state, and a
+	// rollback would announce a transition that never committed. Queue it
+	// behind the commit; with no transaction open, keep the immediate path.
+	// The queued copy runs after the commit has returned the connection to the
+	// pool, so it must not carry the transaction.
+	publish := func(publishCtx context.Context) {
+		if err := s.WebhookPublisher.PublishWebhook(publishCtx, webhookEvent); err != nil {
+			s.Logger.Error(publishCtx, "failed to publish webhook event", "event_name", webhookEvent.EventName, "error", err)
+		}
+	}
+	if !types.RegisterPostCommit(ctx, func() { publish(types.WithoutDBTransaction(ctx)) }) {
+		publish(ctx)
 	}
 }
 

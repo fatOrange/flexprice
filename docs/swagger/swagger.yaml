@@ -5879,6 +5879,8 @@ definitions:
     properties:
       stripe:
         $ref: '#/definitions/StripePaymentGatewayOptions'
+      wechatpay:
+        $ref: '#/definitions/types.WechatPayOptions'
     type: object
   PaymentResponse:
     properties:
@@ -5902,6 +5904,11 @@ definitions:
         type: string
       error_message:
         type: string
+      expires_at:
+        description: |-
+          ExpiresAt is when the gateway object stops accepting payment, persisted at
+          creation and never extended.
+        type: string
       failed_at:
         type: string
       gateway_metadata:
@@ -5918,6 +5925,12 @@ definitions:
         type: string
       metadata:
         $ref: '#/definitions/types.Metadata'
+      next_action:
+        allOf:
+        - $ref: '#/definitions/types.PaymentAction'
+        description: |-
+          NextAction is the customer-facing step to complete an asynchronous
+          payment (WeChat Pay Native QR or JSAPI call parameters).
       payment_gateway:
         type: string
       payment_method_id:
@@ -11110,11 +11123,13 @@ definitions:
     - razorpay
     - chargebee
     - stripe
+    - wechatpay
     type: string
     x-enum-varnames:
     - CheckoutPaymentProviderRazorpay
     - CheckoutPaymentProviderChargebee
     - CheckoutPaymentProviderStripe
+    - CheckoutPaymentProviderWechatPay
   types.CheckoutPaymentProviderConfig:
     properties:
       collection_method:
@@ -12481,6 +12496,17 @@ definitions:
     type: object
   types.PaymentAction:
     properties:
+      jsapi:
+        allOf:
+        - $ref: '#/definitions/types.WechatPayJSAPIParameters'
+        description: |-
+          JSAPI carries the signed parameters to invoke WeChat Pay inside the WeChat
+          browser for jsapi actions.
+      qr_content:
+        description: |-
+          QRContent is the provider payload to render as a QR code for qr_code
+          actions (WeChat Pay native). The customer scans it with the WeChat app.
+        type: string
       type:
         $ref: '#/definitions/types.PaymentActionType'
       url:
@@ -12490,10 +12516,14 @@ definitions:
     enum:
     - checkout_url
     - payment_link
+    - qr_code
+    - jsapi
     type: string
     x-enum-varnames:
     - PaymentActionTypeCheckoutURL
     - PaymentActionTypePaymentLink
+    - PaymentActionTypeQRCode
+    - PaymentActionTypeJSAPI
   types.PaymentBehavior:
     enum:
     - allow_incomplete
@@ -12523,6 +12553,7 @@ definitions:
     - paddle
     - whop
     - chargebee
+    - wechatpay
     type: string
     x-enum-varnames:
     - PaymentGatewayTypeStripe
@@ -12532,6 +12563,7 @@ definitions:
     - PaymentGatewayTypePaddle
     - PaymentGatewayTypeWhop
     - PaymentGatewayTypeChargebee
+    - PaymentGatewayTypeWechatPay
   types.PaymentMethodStatus:
     enum:
     - ACTIVE
@@ -13076,6 +13108,7 @@ definitions:
     - moyasar
     - paddle
     - whop
+    - wechatpay
     - tabs
     - aws_marketplace
     - gcp_marketplace
@@ -13101,6 +13134,7 @@ definitions:
     - SecretProviderMoyasar
     - SecretProviderPaddle
     - SecretProviderWhop
+    - SecretProviderWechatPay
     - SecretProviderTabs
     - SecretProviderAWSMarketplace
     - SecretProviderGCPMarketplace
@@ -14118,6 +14152,28 @@ definitions:
     - WebhookEventCheckoutSessionFailed
     - WebhookEventCheckoutSessionExpired
     - WebhookEventEventRejected
+  types.WechatPayJSAPIParameters:
+    properties:
+      appId:
+        type: string
+      nonceStr:
+        type: string
+      package:
+        type: string
+      paySign:
+        type: string
+      signType:
+        type: string
+      timeStamp:
+        type: string
+    type: object
+  types.WechatPayOptions:
+    properties:
+      openid:
+        type: string
+      payment_type:
+        type: string
+    type: object
   types.WindowSize:
     enum:
     - MINUTE

@@ -24693,6 +24693,9 @@
         "properties": {
           "stripe": {
             "$ref": "#/components/schemas/StripePaymentGatewayOptions"
+          },
+          "wechatpay": {
+            "$ref": "#/components/schemas/types.WechatPayOptions"
           }
         }
       },
@@ -24730,6 +24733,11 @@
           "error_message": {
             "type": "string"
           },
+          "expires_at": {
+            "type": "string",
+            "description": "ExpiresAt is when the gateway object stops accepting payment, persisted at\ncreation and never extended.",
+            "format": "date-time"
+          },
           "failed_at": {
             "type": "string",
             "format": "date-time"
@@ -24754,6 +24762,9 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/types.Metadata"
+          },
+          "next_action": {
+            "$ref": "#/components/schemas/types.PaymentAction"
           },
           "payment_gateway": {
             "type": "string"
@@ -31579,12 +31590,14 @@
         "enum": [
           "razorpay",
           "chargebee",
-          "stripe"
+          "stripe",
+          "wechatpay"
         ],
         "x-enum-varnames": [
           "CheckoutPaymentProviderRazorpay",
           "CheckoutPaymentProviderChargebee",
-          "CheckoutPaymentProviderStripe"
+          "CheckoutPaymentProviderStripe",
+          "CheckoutPaymentProviderWechatPay"
         ],
         "x-speakeasy-name-override": "CheckoutPaymentProvider"
       },
@@ -33468,6 +33481,13 @@
       "types.PaymentAction": {
         "type": "object",
         "properties": {
+          "jsapi": {
+            "$ref": "#/components/schemas/types.WechatPayJSAPIParameters"
+          },
+          "qr_content": {
+            "type": "string",
+            "description": "QRContent is the provider payload to render as a QR code for qr_code\nactions (WeChat Pay native). The customer scans it with the WeChat app."
+          },
           "type": {
             "$ref": "#/components/schemas/types.PaymentActionType"
           },
@@ -33481,11 +33501,15 @@
         "type": "string",
         "enum": [
           "checkout_url",
-          "payment_link"
+          "payment_link",
+          "qr_code",
+          "jsapi"
         ],
         "x-enum-varnames": [
           "PaymentActionTypeCheckoutURL",
-          "PaymentActionTypePaymentLink"
+          "PaymentActionTypePaymentLink",
+          "PaymentActionTypeQRCode",
+          "PaymentActionTypeJSAPI"
         ],
         "x-speakeasy-name-override": "PaymentActionType"
       },
@@ -33526,7 +33550,8 @@
           "moyasar",
           "paddle",
           "whop",
-          "chargebee"
+          "chargebee",
+          "wechatpay"
         ],
         "x-enum-varnames": [
           "PaymentGatewayTypeStripe",
@@ -33535,7 +33560,8 @@
           "PaymentGatewayTypeMoyasar",
           "PaymentGatewayTypePaddle",
           "PaymentGatewayTypeWhop",
-          "PaymentGatewayTypeChargebee"
+          "PaymentGatewayTypeChargebee",
+          "PaymentGatewayTypeWechatPay"
         ],
         "x-speakeasy-name-override": "PaymentGatewayType"
       },
@@ -34284,6 +34310,7 @@
           "moyasar",
           "paddle",
           "whop",
+          "wechatpay",
           "tabs",
           "aws_marketplace",
           "gcp_marketplace",
@@ -34309,6 +34336,7 @@
           "SecretProviderMoyasar",
           "SecretProviderPaddle",
           "SecretProviderWhop",
+          "SecretProviderWechatPay",
           "SecretProviderTabs",
           "SecretProviderAWSMarketplace",
           "SecretProviderGCPMarketplace",
@@ -35662,6 +35690,42 @@
           "WebhookEventEventRejected"
         ],
         "x-speakeasy-name-override": "WebhookEventName"
+      },
+      "types.WechatPayJSAPIParameters": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string"
+          },
+          "nonceStr": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "paySign": {
+            "type": "string"
+          },
+          "signType": {
+            "type": "string"
+          },
+          "timeStamp": {
+            "type": "string"
+          }
+        },
+        "x-speakeasy-name-override": "WechatPayJSAPIParameters"
+      },
+      "types.WechatPayOptions": {
+        "type": "object",
+        "properties": {
+          "openid": {
+            "type": "string"
+          },
+          "payment_type": {
+            "type": "string"
+          }
+        },
+        "x-speakeasy-name-override": "WechatPayOptions"
       },
       "types.WindowSize": {
         "type": "string",

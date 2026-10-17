@@ -2,6 +2,7 @@ package dto
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -30,11 +31,21 @@ type CreatePaymentRequest struct {
 	GatewayOptions         *PaymentGatewayOptions       `json:"gateway_options,omitempty"`
 }
 
+// GatewayMetadata keys the WeChat Pay integration persists on a payment.
+// They are part of the payment response contract: NextAction and ExpiresAt are
+// derived from them, so consumers read the same action the gateway produced.
+const (
+	GatewayMetadataWechatPayOptions   = "wechatpay_options"    // JSON types.WechatPayOptions
+	GatewayMetadataWechatPayAction    = "wechatpay_action"     // JSON types.PaymentAction
+	GatewayMetadataWechatPayExpiresAt = "wechatpay_expires_at" // RFC3339
+)
+
 // PaymentGatewayOptions holds typed, per-gateway payment options. Adding
 // support for a new gateway's options means adding its struct here plus a
 // Validate method on it — no other call site needs to change.
 type PaymentGatewayOptions struct {
-	Stripe *StripePaymentGatewayOptions `json:"stripe,omitempty"`
+	Stripe    *StripePaymentGatewayOptions `json:"stripe,omitempty"`
+	WechatPay *types.WechatPayOptions      `json:"wechatpay,omitempty"`
 }
 
 // Validate checks that any set gateway options are compatible with the
@@ -43,8 +54,27 @@ func (o *PaymentGatewayOptions) Validate(paymentMethodType types.PaymentMethodTy
 	if o == nil {
 		return nil
 	}
+	if o.Stripe != nil && o.WechatPay != nil {
+		return ierr.NewError("gateway_options must target exactly one gateway").
+			WithHint("Provide options for only one payment gateway per request").
+			Mark(ierr.ErrValidation)
+	}
 	if o.Stripe != nil {
 		return o.Stripe.Validate(paymentMethodType, paymentGateway)
+	}
+	if o.WechatPay != nil {
+		if paymentMethodType != types.PaymentMethodTypePaymentLink ||
+			paymentGateway == nil ||
+			*paymentGateway != types.PaymentGatewayTypeWechatPay {
+			return ierr.NewError("gateway_options.wechatpay only applies to WeChat Pay payment-link payments").
+				WithHint("Remove gateway_options.wechatpay, or set payment_method_type to PAYMENT_LINK and payment_gateway to wechatpay").
+				WithReportableDetails(map[string]interface{}{
+					"payment_method_type": paymentMethodType,
+					"payment_gateway":     paymentGateway,
+				}).
+				Mark(ierr.ErrValidation)
+		}
+		return o.WechatPay.Validate()
 	}
 	return nil
 }
@@ -99,36 +129,42 @@ type RecordAttemptRequest struct {
 
 // PaymentResponse represents a payment response
 type PaymentResponse struct {
-	ID                     string                       `json:"id"`
-	IdempotencyKey         string                       `json:"idempotency_key"`
-	DestinationType        types.PaymentDestinationType `json:"destination_type"`
-	DestinationID          string                       `json:"destination_id"`
-	PaymentMethodType      types.PaymentMethodType      `json:"payment_method_type"`
-	PaymentMethodID        string                       `json:"payment_method_id"`
-	Amount                 decimal.Decimal              `json:"amount" swaggertype:"string"`
-	Currency               string                       `json:"currency"`
-	PaymentStatus          types.PaymentStatus          `json:"payment_status"`
-	TrackAttempts          bool                         `json:"track_attempts"`
-	PaymentGateway         *string                      `json:"payment_gateway,omitempty"`
-	GatewayPaymentID       *string                      `json:"gateway_payment_id,omitempty"`
-	GatewayTrackingID      *string                      `json:"gateway_tracking_id,omitempty"`
-	GatewayMetadata        types.Metadata               `json:"gateway_metadata,omitempty"`
-	PaymentURL             *string                      `json:"payment_url,omitempty"`
-	Metadata               types.Metadata               `json:"metadata,omitempty"`
-	SucceededAt            *time.Time                   `json:"succeeded_at,omitempty"`
-	FailedAt               *time.Time                   `json:"failed_at,omitempty"`
-	RefundedAt             *time.Time                   `json:"refunded_at,omitempty"`
-	VoidedAt               *time.Time                   `json:"voided_at,omitempty"`
-	ErrorMessage           *string                      `json:"error_message,omitempty"`
-	Attempts               []*PaymentAttemptResponse    `json:"attempts,omitempty"`
-	InvoiceNumber          *string                      `json:"invoice_number,omitempty"`
-	TenantID               string                       `json:"tenant_id"`
-	SaveCardAndMakeDefault bool                         `json:"save_card_and_make_default"`
-	CreatedAt              time.Time                    `json:"created_at"`
-	UpdatedAt              time.Time                    `json:"updated_at"`
-	CreatedBy              string                       `json:"created_by"`
-	UpdatedBy              string                       `json:"updated_by"`
-	EnvironmentID          string                       `json:"environment_id"`
+	ID                string                       `json:"id"`
+	IdempotencyKey    string                       `json:"idempotency_key"`
+	DestinationType   types.PaymentDestinationType `json:"destination_type"`
+	DestinationID     string                       `json:"destination_id"`
+	PaymentMethodType types.PaymentMethodType      `json:"payment_method_type"`
+	PaymentMethodID   string                       `json:"payment_method_id"`
+	Amount            decimal.Decimal              `json:"amount" swaggertype:"string"`
+	Currency          string                       `json:"currency"`
+	PaymentStatus     types.PaymentStatus          `json:"payment_status"`
+	TrackAttempts     bool                         `json:"track_attempts"`
+	PaymentGateway    *string                      `json:"payment_gateway,omitempty"`
+	GatewayPaymentID  *string                      `json:"gateway_payment_id,omitempty"`
+	GatewayTrackingID *string                      `json:"gateway_tracking_id,omitempty"`
+	GatewayMetadata   types.Metadata               `json:"gateway_metadata,omitempty"`
+	PaymentURL        *string                      `json:"payment_url,omitempty"`
+	// NextAction is the customer-facing step to complete an asynchronous
+	// payment (WeChat Pay Native QR or JSAPI call parameters).
+	NextAction *types.PaymentAction `json:"next_action,omitempty"`
+	// ExpiresAt is when the gateway object stops accepting payment, persisted at
+	// creation and never extended.
+	ExpiresAt              *time.Time                `json:"expires_at,omitempty"`
+	Metadata               types.Metadata            `json:"metadata,omitempty"`
+	SucceededAt            *time.Time                `json:"succeeded_at,omitempty"`
+	FailedAt               *time.Time                `json:"failed_at,omitempty"`
+	RefundedAt             *time.Time                `json:"refunded_at,omitempty"`
+	VoidedAt               *time.Time                `json:"voided_at,omitempty"`
+	ErrorMessage           *string                   `json:"error_message,omitempty"`
+	Attempts               []*PaymentAttemptResponse `json:"attempts,omitempty"`
+	InvoiceNumber          *string                   `json:"invoice_number,omitempty"`
+	TenantID               string                    `json:"tenant_id"`
+	SaveCardAndMakeDefault bool                      `json:"save_card_and_make_default"`
+	CreatedAt              time.Time                 `json:"created_at"`
+	UpdatedAt              time.Time                 `json:"updated_at"`
+	CreatedBy              string                    `json:"created_by"`
+	UpdatedBy              string                    `json:"updated_by"`
+	EnvironmentID          string                    `json:"environment_id"`
 }
 
 func (p *PaymentResponse) ToPayment() *payment.Payment {
@@ -222,6 +258,24 @@ func NewPaymentResponse(p *payment.Payment) *PaymentResponse {
 		}
 	}
 
+	// WeChat Pay stores its typed action and fixed deadline in gateway metadata;
+	// surface them on the response so callers never parse metadata themselves.
+	// A malformed entry is ignored rather than failing the read: the payment row
+	// stays fully usable and the action is only a display aid.
+	if p.GatewayMetadata != nil {
+		if raw, exists := p.GatewayMetadata[GatewayMetadataWechatPayAction]; exists && raw != "" {
+			action := &types.PaymentAction{}
+			if err := json.Unmarshal([]byte(raw), action); err == nil && action.Type != "" {
+				resp.NextAction = action
+			}
+		}
+		if raw, exists := p.GatewayMetadata[GatewayMetadataWechatPayExpiresAt]; exists && raw != "" {
+			if expiresAt, err := time.Parse(time.RFC3339, raw); err == nil {
+				resp.ExpiresAt = &expiresAt
+			}
+		}
+	}
+
 	// Extract SaveCardAndMakeDefault from gateway metadata
 	if p.GatewayMetadata != nil {
 		if saveCardStr, exists := p.GatewayMetadata["save_card_and_make_default"]; exists {
@@ -281,6 +335,18 @@ func (r *CreatePaymentRequest) ToPayment(ctx context.Context) (*payment.Payment,
 	}
 	if r.GatewayOptions != nil && r.GatewayOptions.Stripe != nil && lo.FromPtr(r.GatewayOptions.Stripe.TaxIDCollectionEnabled) {
 		gatewayMetadata["tax_id_collection_enabled"] = "true"
+	}
+	// The WeChat channel choice and openid are needed again when the order is
+	// created, after the row exists; persist them with the payment so a retry or
+	// a timeout recovery uses the same intent that was requested.
+	if r.GatewayOptions != nil && r.GatewayOptions.WechatPay != nil {
+		options, err := json.Marshal(r.GatewayOptions.WechatPay)
+		if err != nil {
+			return nil, ierr.WithError(err).
+				WithHint("Failed to encode gateway_options.wechatpay").
+				Mark(ierr.ErrValidation)
+		}
+		gatewayMetadata[GatewayMetadataWechatPayOptions] = string(options)
 	}
 
 	p := &payment.Payment{
