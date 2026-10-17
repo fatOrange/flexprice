@@ -871,3 +871,21 @@ lint: build-loglint
 ## lint-ci: run loglint on internal/ (errors only — LL008 warnings ignored)
 lint-ci: build-loglint
 	@out=$$(go vet -vettool=./tools/bin/loglint ./internal/... 2>&1 | grep -v "^#" | grep -v "warning:"); if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
+
+# -----------------------------------------------------------------------
+# Host-native local run — Homebrew PostgreSQL/Redis + Docker Kafka/ClickHouse
+# -----------------------------------------------------------------------
+# Use these when make dev-setup conflicts with host services already listening
+# on 5432/6379. Only Kafka, ClickHouse and SQLite-backed Temporal run in Docker.
+
+## setup-local-host: one-time bootstrap (local DB, migrations, seeds, topics,
+## ClickHouse tables), then start the app. Idempotent — safe to rerun.
+.PHONY: setup-local-host
+setup-local-host:
+	bash scripts/start-local-host.sh --setup
+
+## run-local-host: daily start. Validates existing installation and runs the
+## app in the foreground. No schema changes. Ctrl+C leaves infra running.
+.PHONY: run-local-host
+run-local-host:
+	bash scripts/start-local-host.sh

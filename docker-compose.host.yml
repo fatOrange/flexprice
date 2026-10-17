@@ -1,0 +1,23 @@
+# Host-native run overlay (scripts/start-local-host.sh): adds only the Temporal
+# dev server used alongside host PostgreSQL/Redis. Base services stay untouched.
+services:
+  temporal-dev:
+    image: temporalio/temporal:1.9.1
+    # SQLite must be writable on a fresh root-owned volume.
+    # Root is restricted to this loopback-only development container.
+    user: root
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/var/lib/temporal/temporal.db"]
+    ports:
+      - "127.0.0.1:7233:7233" # gRPC frontend (FLEXPRICE_TEMPORAL_ADDRESS)
+      - "127.0.0.1:8233:8233" # Web UI
+    volumes:
+      - temporal-dev-data:/var/lib/temporal
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  temporal-dev-data:
