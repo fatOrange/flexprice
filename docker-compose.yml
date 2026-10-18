@@ -12,8 +12,9 @@
 # ClickHouse and Redis passwords. Those fixed passwords are published defaults
 # for this single-host stack, not deployment secrets; their ports stay bound to
 # 127.0.0.1. Only the image tag, the external PostgreSQL host/port/user/password,
-# and application secrets come from the env file. The database name and TLS mode
-# are fixed here so every deployment targets the same database over TLS.
+# application secrets, and optional SAML origins come from the env file. The
+# database name and TLS mode are fixed here so every deployment targets the same
+# database over TLS.
 #
 #   cp configs/deploy/deploy.env.example .env.deploy
 #   # edit .env.deploy, then:
@@ -89,6 +90,17 @@ x-app-env: &app-env
   # Disable the development API key baked into config.yaml.
   FLEXPRICE_AUTH_API_KEY_KEYS: "{}"
   FLEXPRICE_SECRETS_ENCRYPTION_KEY: ${FLEXPRICE_SECRETS_ENCRYPTION_KEY:?set FLEXPRICE_SECRETS_ENCRYPTION_KEY in .env.deploy}
+
+  # SAML single sign-on is a deployment-wide opt-in. Disabled means the SAML
+  # routes are not mounted and no tenant may store a configuration, so the
+  # empty URLs are inert. Enabling it requires the Redis cache above (already
+  # on) and the non-empty auth secret above: the app refuses to start without
+  # both. BASE_URL is this API's public https origin; DASHBOARD_URL is the
+  # frontend callback that receives the token. Tenant identity providers are
+  # configured separately, in that tenant's saml_config setting.
+  FLEXPRICE_AUTH_SAML_ENABLED: "${FLEXPRICE_AUTH_SAML_ENABLED:-false}"
+  FLEXPRICE_AUTH_SAML_BASE_URL: "${FLEXPRICE_AUTH_SAML_BASE_URL:-}"
+  FLEXPRICE_AUTH_SAML_DASHBOARD_URL: "${FLEXPRICE_AUTH_SAML_DASHBOARD_URL:-}"
 
   SERVICE_NAME: flexprice
   ENVIRONMENT: production
