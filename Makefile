@@ -11,10 +11,10 @@ SWAG_V2_PKG := github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
 # target below uses docker-compose.dev.yml so both can coexist.
 LOCAL_COMPOSE ?= docker compose -f docker-compose.dev.yml
 
-# Single-host SWR deployment. Requires the env file created from
-# configs/deploy/deploy.env.example.
-DEPLOY_ENV_FILE ?= .env.deploy
-DEPLOY_COMPOSE ?= docker compose --env-file $(DEPLOY_ENV_FILE)
+# Single-host SWR deployment. Deployment values (image tag, external
+# PostgreSQL, app secrets, SAML origins) live in the configuration block at the
+# top of docker-compose.yml; edit them there before running these targets.
+DEPLOY_COMPOSE ?= docker compose -f docker-compose.yml
 
 .PHONY: install-swag
 install-swag:
@@ -468,17 +468,18 @@ restart-flexprice: stop-flexprice start-flexprice
 
 # ---------------------------------------------------------------------------
 # Single-host SWR deployment. These target the root docker-compose.yml, which
-# runs the released image in local mode against an external PostgreSQL.
-# Create .env.deploy from configs/deploy/deploy.env.example first.
+# runs the released application image in local mode against an external
+# PostgreSQL, plus the released frontend image.
+# Configure the deployment at the top of docker-compose.yml first.
 # ---------------------------------------------------------------------------
 .PHONY: deploy-config deploy-pull deploy-migrate deploy-migrate-status deploy-init deploy-topics deploy-up deploy-down deploy-ps deploy-logs
 
 deploy-config:
-	@$(DEPLOY_COMPOSE) config >/dev/null
+	@$(DEPLOY_COMPOSE) config --quiet
 	@echo "compose configuration OK"
 
 deploy-pull:
-	$(DEPLOY_COMPOSE) pull flexprice
+	$(DEPLOY_COMPOSE) pull flexprice frontend
 
 # Schema migrations only. Run before deploy-up on every upgrade.
 deploy-migrate:
@@ -507,7 +508,7 @@ deploy-ps:
 	$(DEPLOY_COMPOSE) ps
 
 deploy-logs:
-	$(DEPLOY_COMPOSE) logs -f flexprice
+	$(DEPLOY_COMPOSE) logs -f flexprice frontend
 
 # Full developer setup with clear instructions
 .PHONY: dev-setup

@@ -3,60 +3,169 @@
 # Runs the released image from Huawei SWR in deployment.mode=local: one process
 # serves the API, every Kafka consumer registered for local mode, and the
 # Temporal worker. PostgreSQL is external (managed or self-hosted outside this
-# stack); Temporal persists to the same external PostgreSQL server.
+# stack); Temporal persists to the same external PostgreSQL server. The
+# dashboard frontend runs alongside it as a separate released nginx image; its
+# API origin is baked in at build time (see x-frontend-image).
 #
 # Local development uses docker-compose.dev.yml instead. This file must not
 # fall back to the dev database or the sample API key baked into config.yaml.
-# Internal service parameters (Kafka topics, ClickHouse user/database, Temporal
-# persistence names, bind addresses) are fixed here, as are the bundled
-# ClickHouse and Redis passwords. Those fixed passwords are published defaults
-# for this single-host stack, not deployment secrets; their ports stay bound to
-# 127.0.0.1. Only the image tag, the external PostgreSQL host/port/user/password,
-# application secrets, and optional SAML origins come from the env file. The
-# database name and TLS mode are fixed here so every deployment targets the same
-# database over TLS.
 #
-#   cp configs/deploy/deploy.env.example .env.deploy
-#   # edit .env.deploy, then:
-#   docker compose --env-file .env.deploy config >/dev/null
-#   docker compose --env-file .env.deploy --profile init run --rm migrate-postgres
-#   docker compose --env-file .env.deploy --profile init run --rm migrate-clickhouse
-#   docker compose --env-file .env.deploy up -d
+# All deployment values live in the configuration block below: the image tags,
+# the external PostgreSQL endpoint and credentials for the app and Temporal,
+# the application auth/encryption secrets, and the public SAML origins. Edit
+# the literal values there. This file reads no env file and does no external
+# interpolation: every value passed to a container is set here. Internal
+# service parameters (service DNS names, Kafka topics, ClickHouse user and
+# database, Temporal persistence names, bind addresses) remain fixed in the
+# services below. The bundled ClickHouse and Redis passwords are published
+# defaults for this single-host stack, not deployment secrets; their ports stay
+# bound to 127.0.0.1.
+#
+# Only the infrastructure ports stay on loopback. The API (8080) and the
+# dashboard (3000) are published on every host interface and serve plain HTTP.
+# Restrict those ports with the host firewall or a private network such as
+# Tailscale, or terminate TLS in front of them; see section 3 of
+# docs/deployment/swr-compose.md.
+#
+# Before starting, replace every CHANGE_ME value and the example PostgreSQL
+# host. Generate the secrets with:
+#   openssl rand -hex 32     # FLEXPRICE_AUTH_SECRET, FLEXPRICE_SECRETS_ENCRYPTION_KEY
+#   openssl rand -hex 24     # external PostgreSQL passwords
+# Compose still treats a dollar sign in a YAML value as interpolation even
+# though this file reads no env file: if a value must contain one, write it as
+# two dollar signs.
+# Once filled in, this file contains deployment credentials: do not commit it
+# to a public repository. Restrict access and keep real values out of version
+# control.
+#
+#   docker compose -f docker-compose.yml config --quiet
+#   docker compose -f docker-compose.yml --profile init run --rm migrate-postgres
+#   docker compose -f docker-compose.yml --profile init run --rm migrate-clickhouse
+#   docker compose -f docker-compose.yml up -d
 #
 # Schema migrations create no tenant or user. After the app starts, bootstrap
 # through POST /v1/auth/signup; see docs/deployment/swr-compose.md.
-#
-# See docs/deployment/swr-compose.md for the full runbook.
 
 name: flexprice
 
+# =============================================================================
+# Deployment configuration — edit this block.
+# =============================================================================
+
+# Released image. The SWR workflow publishes linux/amd64 only. Edit the tag to
+# pin a sha-<commit>-<run>-<attempt> build instead of latest, for example when
+# rolling back.
 x-flexprice-image: &flexprice-image
-  image: ${FLEXPRICE_IMAGE:-swr.cn-east-3.myhuaweicloud.com/digitprint/flexprice:latest}
-  # The SWR workflow publishes linux/amd64 only.
+  image: swr.cn-east-3.myhuaweicloud.com/digitprint/flexprice:latest
   platform: linux/amd64
 
-# Single source of truth for the bundled middleware credentials, shared by the
-# app, the middleware containers, the migrations, and the Redis healthcheck.
+# Released frontend image: the dashboard SPA served by nginx on port 80. The
+# API base URL is fixed when the bundle is built, so the service below takes no
+# runtime environment and no source mounts. The SWR workflow publishes
+# linux/amd64 only; edit the tag to pin a sha-<commit>-<run>-<attempt> build
+# instead of latest, for example when rolling back.
+x-frontend-image: &frontend-image
+  image: swr.cn-east-3.myhuaweicloud.com/digitprint/flexprice-front:latest
+  platform: linux/amd64
+
+# External PostgreSQL server shared by the application and Temporal. The
+# databases must already exist. The app role needs CREATE on schema public for
+# the migration job; the Temporal role must own temporal and
+# temporal_visibility (or have CREATE on schema public in each).
+x-postgres-host: &postgres-host postgres.example.internal
+x-postgres-port: &postgres-port "5432"
+
+# Application database connection, shared by the app and migrate-postgres.
+# Database name and TLS mode are fixed so both target the same database over
+# TLS. sslmode=require encrypts the connection but does not verify the server
+# certificate or hostname. The reader is optional: keep the host empty and the
+# port 0 to route all reads to the writer.
+x-flexprice-postgres: &flexprice-postgres
+  FLEXPRICE_POSTGRES_HOST: *postgres-host
+  FLEXPRICE_POSTGRES_PORT: *postgres-port
+  FLEXPRICE_POSTGRES_USER: flexprice
+  FLEXPRICE_POSTGRES_PASSWORD: CHANGE_ME_postgres_app_password
+  FLEXPRICE_POSTGRES_DBNAME: flexprice
+  FLEXPRICE_POSTGRES_SSLMODE: require
+  FLEXPRICE_POSTGRES_READER_HOST: *postgres-host
+  FLEXPRICE_POSTGRES_READER_PORT: *postgres-port
+
+# Temporal persistence on the same server. Database names, the default
+# namespace, and SKIP_DB_CREATE=true are fixed in the temporal service below.
+x-temporal-postgres: &temporal-postgres
+  POSTGRES_SEEDS: *postgres-host
+  DB_PORT: *postgres-port
+  POSTGRES_USER: flexprice
+  POSTGRES_PWD: CHANGE_ME_temporal_password
+
+# Temporal's PostgreSQL TLS, rendered into both variable families the image
+# reads:
+#   - POSTGRES_TLS_* is used by auto-setup.sh for temporal-sql-tool schema
+#     create/update connections.
+#   - SQL_* is used by the running server's default and visibility SQL
+#     connections.
+# Keep the pairs consistent. The verification flags are inverses:
+# SQL_HOST_VERIFICATION must be "false" when
+# POSTGRES_TLS_DISABLE_HOST_VERIFICATION is "true". Certificate paths are
+# container paths under /etc/temporal/tls; leave them empty while TLS is
+# disabled.
+x-temporal-postgres-tls: &temporal-postgres-tls
+  POSTGRES_TLS_ENABLED: &temporal-pg-tls-enabled "false"
+  POSTGRES_TLS_DISABLE_HOST_VERIFICATION: &temporal-pg-tls-disable-host-verification "false"
+  POSTGRES_TLS_CA_FILE: &temporal-pg-tls-ca-file ""
+  POSTGRES_TLS_CERT_FILE: &temporal-pg-tls-cert-file ""
+  POSTGRES_TLS_KEY_FILE: &temporal-pg-tls-key-file ""
+  POSTGRES_TLS_SERVER_NAME: &temporal-pg-tls-server-name ""
+  SQL_TLS_ENABLED: *temporal-pg-tls-enabled
+  SQL_HOST_VERIFICATION: &temporal-pg-tls-host-verification "true"
+  SQL_CA: *temporal-pg-tls-ca-file
+  SQL_CERT: *temporal-pg-tls-cert-file
+  SQL_CERT_KEY: *temporal-pg-tls-key-file
+  SQL_HOST_NAME: *temporal-pg-tls-server-name
+
+# Host directory bind-mounted read-only at /etc/temporal/tls. It must exist.
+# The default always exists and needs no certificate while TLS is disabled.
+x-temporal-postgres-tls-ca-dir: &temporal-postgres-tls-ca-dir ./configs/deploy
+
+# Application auth and encryption. Replace both CHANGE_ME values before
+# starting. The auth provider is fixed to flexprice and the API key map to {}
+# below, which disables the development API key baked into config.yaml.
+x-app-secrets: &app-secrets
+  FLEXPRICE_AUTH_SECRET: CHANGE_ME_openssl_rand_hex_32
+  FLEXPRICE_SECRETS_ENCRYPTION_KEY: CHANGE_ME_openssl_rand_hex_32
+
+# SAML single sign-on, deployment-wide. BASE_URL is this API's public https
+# origin; DASHBOARD_URL is the exact frontend callback path that receives the
+# token. Tenant identity providers are configured separately in each tenant's
+# saml_config setting. Enabling here only mounts the SAML routes; SAML also
+# needs Redis (already on) and the non-empty auth secret above. Set ENABLED to
+# "false" and leave the URLs empty when this installation does not offer SSO.
+# Non-loopback SAML URLs must be HTTPS. The direct HTTP ports below are not SAML
+# origins; SAML requires the HTTPS reverse-proxy path described in the
+# deployment guide, with the frontend built against the HTTPS API.
+x-saml: &saml
+  FLEXPRICE_AUTH_SAML_ENABLED: "true"
+  FLEXPRICE_AUTH_SAML_BASE_URL: https://pay.zhikaoya.cn
+  FLEXPRICE_AUTH_SAML_DASHBOARD_URL: https://front.pay.zhikaoya.cn/auth/callback
+
+# Bundled middleware credentials, shared by the app, the middleware
+# containers, the migrations, and the Redis healthcheck. These are published
+# defaults for this single-host stack, not deployment secrets; their ports stay
+# bound to 127.0.0.1.
 x-clickhouse-password: &clickhouse-password flexprice_clickhouse
 x-redis-password: &redis-password flexprice_redis
 
+x-clickhouse: &clickhouse
+  FLEXPRICE_CLICKHOUSE_ADDRESS: clickhouse:9000
+  FLEXPRICE_CLICKHOUSE_USERNAME: flexprice
+  FLEXPRICE_CLICKHOUSE_PASSWORD: *clickhouse-password
+  FLEXPRICE_CLICKHOUSE_DATABASE: flexprice
+
 x-app-env: &app-env
+  <<: [*flexprice-postgres, *clickhouse, *app-secrets, *saml]
   FLEXPRICE_DEPLOYMENT_MODE: local
   FLEXPRICE_SERVER_ADDRESS: ":8080"
   FLEXPRICE_ACTIVITY_ENABLED: "true"
-
-  # External PostgreSQL. No default host/user/password: inheriting the dev
-  # values from config.yaml is exactly what this deployment must not do.
-  # Database name and TLS mode are fixed: the stack requires TLS, and the
-  # migration job must target the same database as the app.
-  FLEXPRICE_POSTGRES_HOST: ${FLEXPRICE_POSTGRES_HOST:?set FLEXPRICE_POSTGRES_HOST in .env.deploy}
-  FLEXPRICE_POSTGRES_PORT: ${FLEXPRICE_POSTGRES_PORT:-5432}
-  FLEXPRICE_POSTGRES_USER: ${FLEXPRICE_POSTGRES_USER:?set FLEXPRICE_POSTGRES_USER in .env.deploy}
-  FLEXPRICE_POSTGRES_PASSWORD: ${FLEXPRICE_POSTGRES_PASSWORD:?set FLEXPRICE_POSTGRES_PASSWORD in .env.deploy}
-  FLEXPRICE_POSTGRES_DBNAME: flexprice
-  FLEXPRICE_POSTGRES_SSLMODE: require
-  FLEXPRICE_POSTGRES_READER_HOST: "${FLEXPRICE_POSTGRES_READER_HOST:-}"
-  FLEXPRICE_POSTGRES_READER_PORT: ${FLEXPRICE_POSTGRES_READER_PORT:-0}
 
   FLEXPRICE_KAFKA_BROKERS: kafka:9092
   FLEXPRICE_KAFKA_TOPIC: events
@@ -68,11 +177,6 @@ x-app-env: &app-env
   # config.yaml defaults this to flexprice_system_events; the deployment topic
   # set (configs/deploy/kafka-topics.json) uses system_events.
   FLEXPRICE_WEBHOOK_TOPIC: system_events
-
-  FLEXPRICE_CLICKHOUSE_ADDRESS: clickhouse:9000
-  FLEXPRICE_CLICKHOUSE_USERNAME: flexprice
-  FLEXPRICE_CLICKHOUSE_PASSWORD: *clickhouse-password
-  FLEXPRICE_CLICKHOUSE_DATABASE: flexprice
 
   FLEXPRICE_REDIS_HOST: redis
   FLEXPRICE_REDIS_PORT: "6379"
@@ -86,21 +190,8 @@ x-app-env: &app-env
   FLEXPRICE_TEMPORAL_TLS: "false"
 
   FLEXPRICE_AUTH_PROVIDER: flexprice
-  FLEXPRICE_AUTH_SECRET: ${FLEXPRICE_AUTH_SECRET:?set FLEXPRICE_AUTH_SECRET in .env.deploy}
   # Disable the development API key baked into config.yaml.
   FLEXPRICE_AUTH_API_KEY_KEYS: "{}"
-  FLEXPRICE_SECRETS_ENCRYPTION_KEY: ${FLEXPRICE_SECRETS_ENCRYPTION_KEY:?set FLEXPRICE_SECRETS_ENCRYPTION_KEY in .env.deploy}
-
-  # SAML single sign-on is a deployment-wide opt-in. Disabled means the SAML
-  # routes are not mounted and no tenant may store a configuration, so the
-  # empty URLs are inert. Enabling it requires the Redis cache above (already
-  # on) and the non-empty auth secret above: the app refuses to start without
-  # both. BASE_URL is this API's public https origin; DASHBOARD_URL is the
-  # frontend callback that receives the token. Tenant identity providers are
-  # configured separately, in that tenant's saml_config setting.
-  FLEXPRICE_AUTH_SAML_ENABLED: "${FLEXPRICE_AUTH_SAML_ENABLED:-false}"
-  FLEXPRICE_AUTH_SAML_BASE_URL: "${FLEXPRICE_AUTH_SAML_BASE_URL:-}"
-  FLEXPRICE_AUTH_SAML_DASHBOARD_URL: "${FLEXPRICE_AUTH_SAML_DASHBOARD_URL:-}"
 
   SERVICE_NAME: flexprice
   ENVIRONMENT: production
@@ -206,53 +297,28 @@ services:
     restart: unless-stopped
 
   # Temporal persists to the external PostgreSQL server. Both databases must
-  # exist and be owned by (or grant CREATE to) TEMPORAL_POSTGRES_USER before
-  # this starts; SKIP_DB_CREATE=true keeps the container from trying to create
-  # them with credentials that should not be superuser.
+  # exist and be owned by (or grant CREATE to) POSTGRES_USER before this
+  # starts; SKIP_DB_CREATE=true keeps the container from trying to create them
+  # with credentials that should not be superuser.
   temporal:
     image: temporalio/auto-setup:1.26.2
     ports:
       - "127.0.0.1:7233:7233"
     environment:
+      <<: [*temporal-postgres, *temporal-postgres-tls]
       DB: postgres12
-      DB_PORT: ${TEMPORAL_POSTGRES_PORT:-5432}
-      POSTGRES_SEEDS: ${TEMPORAL_POSTGRES_HOST:?set TEMPORAL_POSTGRES_HOST in .env.deploy}
-      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?set TEMPORAL_POSTGRES_USER in .env.deploy}
-      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?set TEMPORAL_POSTGRES_PASSWORD in .env.deploy}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
       SKIP_DB_CREATE: "true"
       ENABLE_ES: "false"
       DEFAULT_NAMESPACE: default
-      # TLS is configured twice in this image:
-      #   - POSTGRES_TLS_* is read by auto-setup.sh for the temporal-sql-tool
-      #     schema create/update connections.
-      #   - SQL_* is read by config_template.yaml for the running server's
-      #     default and visibility SQL connections.
-      # Set both from the same .env.deploy values. The server key is
-      # SQL_HOST_NAME; SQL_SERVER_NAME is not part of the 1.26.2 template.
-      # Verification flags are inverses: SQL_HOST_VERIFICATION must be false
-      # when POSTGRES_TLS_DISABLE_HOST_VERIFICATION is true.
-      POSTGRES_TLS_ENABLED: ${TEMPORAL_POSTGRES_TLS_ENABLED:-false}
-      POSTGRES_TLS_DISABLE_HOST_VERIFICATION: ${TEMPORAL_POSTGRES_TLS_DISABLE_HOST_VERIFICATION:-false}
-      POSTGRES_TLS_CA_FILE: ${TEMPORAL_POSTGRES_TLS_CA_FILE:-}
-      POSTGRES_TLS_CERT_FILE: ${TEMPORAL_POSTGRES_TLS_CERT_FILE:-}
-      POSTGRES_TLS_KEY_FILE: ${TEMPORAL_POSTGRES_TLS_KEY_FILE:-}
-      POSTGRES_TLS_SERVER_NAME: ${TEMPORAL_POSTGRES_TLS_SERVER_NAME:-}
-      SQL_TLS_ENABLED: ${TEMPORAL_POSTGRES_TLS_ENABLED:-false}
-      SQL_HOST_VERIFICATION: ${TEMPORAL_POSTGRES_TLS_HOST_VERIFICATION:-true}
-      SQL_CA: ${TEMPORAL_POSTGRES_TLS_CA_FILE:-}
-      SQL_CERT: ${TEMPORAL_POSTGRES_TLS_CERT_FILE:-}
-      SQL_CERT_KEY: ${TEMPORAL_POSTGRES_TLS_KEY_FILE:-}
-      SQL_HOST_NAME: ${TEMPORAL_POSTGRES_TLS_SERVER_NAME:-}
     volumes:
       # Mount the directory, not an individual file: with TLS disabled this is
       # an empty or unused read-only directory and no certificate has to exist.
-      # Put the CA (and optional client cert/key) here; paths in the
-      # TEMPORAL_POSTGRES_TLS_*_FILE variables are container paths under
-      # /etc/temporal/tls.
+      # Put the CA (and optional client cert/key) here; the paths above are
+      # container paths under /etc/temporal/tls.
       - type: bind
-        source: ${TEMPORAL_POSTGRES_TLS_CA_DIR:-./configs/deploy}
+        source: *temporal-postgres-tls-ca-dir
         target: /etc/temporal/tls
         read_only: true
         bind:
@@ -272,12 +338,7 @@ services:
     profiles: ["init"]
     command: ["./migrate", "postgres", "up"]
     environment:
-      FLEXPRICE_POSTGRES_HOST: ${FLEXPRICE_POSTGRES_HOST:?set FLEXPRICE_POSTGRES_HOST in .env.deploy}
-      FLEXPRICE_POSTGRES_PORT: ${FLEXPRICE_POSTGRES_PORT:-5432}
-      FLEXPRICE_POSTGRES_USER: ${FLEXPRICE_POSTGRES_USER:?set FLEXPRICE_POSTGRES_USER in .env.deploy}
-      FLEXPRICE_POSTGRES_PASSWORD: ${FLEXPRICE_POSTGRES_PASSWORD:?set FLEXPRICE_POSTGRES_PASSWORD in .env.deploy}
-      FLEXPRICE_POSTGRES_DBNAME: flexprice
-      FLEXPRICE_POSTGRES_SSLMODE: require
+      <<: *flexprice-postgres
     restart: "no"
 
   # One-shot ClickHouse schema migration (migrations/clickhouse/*.sql).
@@ -286,10 +347,7 @@ services:
     profiles: ["init"]
     command: ["./migrate", "clickhouse"]
     environment:
-      FLEXPRICE_CLICKHOUSE_ADDRESS: clickhouse:9000
-      FLEXPRICE_CLICKHOUSE_USERNAME: flexprice
-      FLEXPRICE_CLICKHOUSE_PASSWORD: flexprice123
-      FLEXPRICE_CLICKHOUSE_DATABASE: flexprice
+      <<: *clickhouse
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -308,8 +366,9 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+    # Published on every host interface; see the exposure note at the top.
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     environment:
       <<: *app-env
     healthcheck:
@@ -319,6 +378,25 @@ services:
       retries: 12
       start_period: 30s
     stop_grace_period: 45s
+    restart: unless-stopped
+
+  # Static dashboard SPA. nginx serves the bundle baked into the image; there
+  # are no source mounts and no runtime configuration. The browser calls the
+  # API at the origin compiled into the bundle, not through this container.
+  # Published on host port 3000 of every interface, so the SPA is reachable at
+  # http://<host>:3000 without a reverse proxy or tunnel. nginx serves plain
+  # HTTP; see the exposure note at the top and section 3 of the deployment
+  # guide.
+  frontend:
+    <<: *frontend-image
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
