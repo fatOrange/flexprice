@@ -320,8 +320,8 @@ services:
     environment:
       <<: [*temporal-postgres, *temporal-postgres-tls]
       DB: postgres12
-      DBNAME: temporal
-      VISIBILITY_DBNAME: temporal_visibility
+      DBNAME: flexprice_temporal
+      VISIBILITY_DBNAME: flexprice_temporal_visibility
       SKIP_DB_CREATE: "true"
       ENABLE_ES: "false"
       DEFAULT_NAMESPACE: default
