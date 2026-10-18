@@ -10,16 +10,18 @@
 # Local development uses docker-compose.dev.yml instead. This file must not
 # fall back to the dev database or the sample API key baked into config.yaml.
 #
-# All deployment values live in the configuration block below: the image tags,
-# the external PostgreSQL endpoint and credentials for the app and Temporal,
-# the application auth/encryption secrets, and the public SAML origins. Edit
-# the literal values there. This file reads no env file and does no external
-# interpolation: every value passed to a container is set here. Internal
-# service parameters (service DNS names, Kafka topics, ClickHouse user and
-# database, Temporal persistence names, bind addresses) remain fixed in the
-# services below. The bundled ClickHouse and Redis passwords are published
-# defaults for this single-host stack, not deployment secrets; their ports stay
-# bound to 127.0.0.1.
+# Almost all deployment values live in the configuration block below: the image
+# tags, the external PostgreSQL endpoint, the application auth/encryption
+# secrets, and the public SAML origins. Edit the literal values there. The two
+# external PostgreSQL passwords are the exception: they are required Compose
+# environment variables, FLEXPRICE_POSTGRES_PASSWORD and POSTGRES_PWD, with no
+# defaults. This file reads no env file; provide them in the process
+# environment (Coolify's runtime environment variables, or exported in the
+# shell that runs compose). Internal service parameters (service DNS names,
+# Kafka topics, ClickHouse user and database, Temporal persistence names, bind
+# addresses) remain fixed in the services below. The bundled ClickHouse and
+# Redis passwords are published defaults for this single-host stack, not
+# deployment secrets; their ports stay bound to 127.0.0.1.
 #
 # Only the infrastructure ports stay on loopback. The API (8080) and the
 # dashboard (3000) are published on every host interface and serve plain HTTP.
@@ -27,17 +29,20 @@
 # Tailscale, or terminate TLS in front of them; see section 3 of
 # docs/deployment/swr-compose.md.
 #
-# Before starting, replace every CHANGE_ME value and the example PostgreSQL
-# host. Generate the secrets with:
+# Before starting, set both PostgreSQL password environment variables and
+# replace every remaining CHANGE_ME value and the example PostgreSQL host.
+# The app and Temporal currently share one PostgreSQL role, so both variables
+# must hold the same password. Generate the values with:
 #   openssl rand -hex 32     # FLEXPRICE_AUTH_SECRET, FLEXPRICE_SECRETS_ENCRYPTION_KEY
-#   openssl rand -hex 24     # external PostgreSQL passwords
-# Compose still treats a dollar sign in a YAML value as interpolation even
-# though this file reads no env file: if a value must contain one, write it as
-# two dollar signs.
-# Once filled in, this file contains deployment credentials: do not commit it
-# to a public repository. Restrict access and keep real values out of version
-# control.
+#   openssl rand -hex 24     # FLEXPRICE_POSTGRES_PASSWORD, POSTGRES_PWD
+# Compose treats a dollar sign in a literal YAML value as interpolation: if a
+# value must contain one, write it as two dollar signs. Values supplied through
+# the two environment variables are substituted as-is and need no escaping.
+# The filled file contains the application secrets, and the environment
+# contains the PostgreSQL passwords: do not commit either to a public
+# repository. Restrict access and keep real values out of version control.
 #
+#   export FLEXPRICE_POSTGRES_PASSWORD=... POSTGRES_PWD=...
 #   docker compose -f docker-compose.yml config --quiet
 #   docker compose -f docker-compose.yml --profile init run --rm migrate-postgres
 #   docker compose -f docker-compose.yml --profile init run --rm migrate-clickhouse
@@ -72,31 +77,37 @@ x-frontend-image: &frontend-image
 # databases must already exist. The app role needs CREATE on schema public for
 # the migration job; the Temporal role must own temporal and
 # temporal_visibility (or have CREATE on schema public in each).
-x-postgres-host: &postgres-host postgres.example.internal
+x-postgres-host: &postgres-host pgm-bp104191c383z0d1co.pg.rds.aliyuncs.com
 x-postgres-port: &postgres-port "5432"
 
 # Application database connection, shared by the app and migrate-postgres.
-# Database name and TLS mode are fixed so both target the same database over
-# TLS. sslmode=require encrypts the connection but does not verify the server
-# certificate or hostname. The reader is optional: keep the host empty and the
-# port 0 to route all reads to the writer.
+# Database name and SSL mode are fixed so both target the same database with
+# the same connection mode. External PostgreSQL runs without TLS:
+# sslmode=disable sends the password and all data in plaintext. Keep the
+# server on a trusted network and restrict access with host firewall rules;
+# never expose it to untrusted networks. The reader is optional: keep the host
+# empty and the port 0 to route all reads to the writer.
+# FLEXPRICE_POSTGRES_PASSWORD is required from the environment; the app and
+# the migrate-postgres job share this block.
 x-flexprice-postgres: &flexprice-postgres
   FLEXPRICE_POSTGRES_HOST: *postgres-host
   FLEXPRICE_POSTGRES_PORT: *postgres-port
-  FLEXPRICE_POSTGRES_USER: flexprice
-  FLEXPRICE_POSTGRES_PASSWORD: CHANGE_ME_postgres_app_password
+  FLEXPRICE_POSTGRES_USER: flexprice_user
+  FLEXPRICE_POSTGRES_PASSWORD: "${FLEXPRICE_POSTGRES_PASSWORD:?}"
   FLEXPRICE_POSTGRES_DBNAME: flexprice
-  FLEXPRICE_POSTGRES_SSLMODE: require
+  FLEXPRICE_POSTGRES_SSLMODE: disable
   FLEXPRICE_POSTGRES_READER_HOST: *postgres-host
   FLEXPRICE_POSTGRES_READER_PORT: *postgres-port
 
 # Temporal persistence on the same server. Database names, the default
 # namespace, and SKIP_DB_CREATE=true are fixed in the temporal service below.
+# The same role is used here, so POSTGRES_PWD must match
+# FLEXPRICE_POSTGRES_PASSWORD while both blocks use flexprice_user.
 x-temporal-postgres: &temporal-postgres
   POSTGRES_SEEDS: *postgres-host
   DB_PORT: *postgres-port
-  POSTGRES_USER: flexprice
-  POSTGRES_PWD: CHANGE_ME_temporal_password
+  POSTGRES_USER: flexprice_user
+  POSTGRES_PWD: "${FLEXPRICE_POSTGRES_PASSWORD:?}"
 
 # Temporal's PostgreSQL TLS, rendered into both variable families the image
 # reads:
