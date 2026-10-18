@@ -24,8 +24,9 @@
 # this single-host stack, not deployment secrets; their ports stay bound to
 # 127.0.0.1.
 #
-# Only the infrastructure ports stay on loopback. The API (8080) and the
-# dashboard (3000) are published on every host interface and serve plain HTTP.
+# Only the infrastructure ports stay on loopback. The API (8000) and the
+# dashboard (3000) are published on every host interface and serve plain HTTP;
+# the app itself still listens on container port 8080.
 # Restrict those ports with the host firewall or a private network such as
 # Tailscale, or terminate TLS in front of them; see section 3 of
 # docs/deployment/swr-compose.md.
@@ -380,8 +381,9 @@ services:
       temporal:
         condition: service_healthy
     # Published on every host interface; see the exposure note at the top.
+    # Host 8000 → container 8080 (the app keeps listening on 8080 internally).
     ports:
-      - "8080:8080"
+      - "8000:8080"
     environment:
       <<: *app-env
     healthcheck:
