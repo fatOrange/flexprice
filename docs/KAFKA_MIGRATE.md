@@ -58,19 +58,19 @@ TLS/SASL settings, etc.) — it needs a working `kafka.brokers` connection, noth
 
 ```bash
 # Local, against docker-compose kafka (uses config.yaml's dev topic list)
-go run ./cmd/kafka-migrate -dry-run
-go run ./cmd/kafka-migrate            # actually creates/grows topics
+go run ./cmd/migrate kafka -dry-run
+go run ./cmd/migrate kafka            # actually creates/grows topics
 
 # From the built image
 docker run --rm \
   -e FLEXPRICE_KAFKA_BROKERS='broker1:9092,broker2:9092' \
-  <image> ./kafka-migrate -dry-run
+  <image> ./migrate kafka -dry-run
 
 # Prod-style run with an explicit topic override
 docker run --rm \
   -e FLEXPRICE_KAFKA_BROKERS='...' \
   -e FLEXPRICE_KAFKA_TOPICS='{"defaults":{...},"topics":{...}}' \
-  <image> ./kafka-migrate
+  <image> ./migrate kafka
 ```
 
 Flags:
@@ -101,5 +101,5 @@ logged but never auto-corrected.
 
 ```bash
 docker build -t flexprice:local .
-docker run --rm flexprice:local ./kafka-migrate -dry-run
+docker run --rm flexprice:local ./migrate kafka -dry-run
 ```

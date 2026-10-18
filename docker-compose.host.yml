@@ -1,5 +1,7 @@
 # Host-native run overlay (scripts/start-local-host.sh): adds only the Temporal
-# dev server used alongside host PostgreSQL/Redis. Base services stay untouched.
+# dev server used alongside host PostgreSQL/Redis. It is layered on
+# docker-compose.dev.yml, and that base stack's PostgreSQL/Temporal services
+# stay untouched.
 services:
   temporal-dev:
     image: temporalio/temporal:1.9.1

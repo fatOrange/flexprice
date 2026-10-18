@@ -137,10 +137,10 @@ We use logical task queues to organize workflows and activities:
 
 ```bash
 # Start all services including Temporal
-docker-compose up -d
+docker compose -f docker-compose.dev.yml up -d
 
 # Verify services are running
-docker-compose ps
+docker compose -f docker-compose.dev.yml ps
 ```
 
 This starts:
@@ -686,10 +686,10 @@ func (a *TaskActivities) ProcessTask(ctx context.Context, input models.ProcessTa
 
 ```bash
 # Check if workers are running
-docker-compose logs flexprice-worker
+docker compose -f docker-compose.dev.yml logs flexprice
 
 # Check Temporal server logs
-docker-compose logs temporal
+docker compose -f docker-compose.dev.yml logs temporal
 
 # Verify workflow registration
 curl http://localhost:8088/api/v1/namespaces/default/workflows
@@ -761,7 +761,7 @@ func TaskProcessingWorkflow(ctx workflow.Context, input models.TaskProcessingWor
 curl http://localhost:7233/api/v1/namespaces/default/task-queues
 
 # Check worker logs
-docker-compose logs flexprice-worker | grep "worker"
+docker compose -f docker-compose.dev.yml logs flexprice | grep "worker"
 ```
 
 ### Performance Optimization

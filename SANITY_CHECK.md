@@ -137,7 +137,7 @@ curl -s -X POST $BASE/events \
 sleep 2
 
 # Verify event landed in ClickHouse
-docker compose exec clickhouse clickhouse-client \
+docker compose -f docker-compose.dev.yml exec clickhouse clickhouse-client \
   --user=flexprice --password=flexprice123 --database=flexprice \
   --query="SELECT id, external_customer_id, event_name FROM events WHERE external_customer_id='sanity-customer-001' ORDER BY timestamp DESC LIMIT 3 FORMAT PrettyCompact"
 # ✅ row visible
@@ -202,7 +202,7 @@ sleep 2
 # ✅ Consumer log: success_count=1, skip_count=1
 
 # Verify only allowed IDs in ClickHouse
-docker compose exec clickhouse clickhouse-client \
+docker compose -f docker-compose.dev.yml exec clickhouse clickhouse-client \
   --user=flexprice --password=flexprice123 --database=flexprice \
   --query="SELECT id, external_customer_id FROM events WHERE id IN ('sanity-raw-003','sanity-raw-004') FORMAT PrettyCompact"
 # ✅ only sanity-raw-003 appears; sanity-raw-004 (blocked) is absent

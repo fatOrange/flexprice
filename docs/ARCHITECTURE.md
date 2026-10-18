@@ -76,6 +76,11 @@ Controlled by **`FLEXPRICE_DEPLOYMENT_MODE`** (see [`REPO_MAP.md`](REPO_MAP.md) 
 - Isolate Temporal worker CPU from HTTP.
 - `admin` runs the admin portal (`internal/api/admin`) for operator management of tenant accounts and settings. It does not start the public API, Kafka consumers, or Temporal workers. `/v1` requires `admin.secret`. Cross-tenant tenant targeting is intentional. Per-operator RBAC and an action audit log are not built yet.
 
+For single-host deployments, `docker-compose.yml` runs the released SWR image
+as one `local` process (API + Kafka consumers + Temporal worker) with external
+PostgreSQL. `docker-compose.dev.yml` is the local development stack. See
+[`deployment/swr-compose.md`](deployment/swr-compose.md).
+
 ---
 
 ## Event flow patterns

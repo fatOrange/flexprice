@@ -106,6 +106,10 @@ To run Flexprice for local development or running from source, you will need
 
 #### Quick Setup with Docker Compose
 
+Local development uses `docker-compose.dev.yml`; the root
+`docker-compose.yml` is the single-host SWR deployment (external PostgreSQL,
+released image). `make dev-setup` selects the dev file automatically.
+
 The easiest way to get started is using our Docker Compose setup:
 
 ```bash
@@ -122,7 +126,7 @@ This will:
 1. Start all required infrastructure (PostgreSQL, Kafka, ClickHouse, Temporal)
 2. Build the FlexPrice application image
 3. Run database migrations and initialize Kafka
-4. Start all FlexPrice services (API, Consumer, Worker)
+4. Start the FlexPrice app in local mode (API + Kafka consumers + Temporal worker)
 
 Once complete, you can access:
 
@@ -155,12 +159,15 @@ make start-flexprice
 If you prefer to run the application directly:
 
 ```bash
-# Start the required infrastructure
-docker compose up -d postgres kafka clickhouse redis temporal temporal-ui
+# Start the required local infrastructure (dev compose file)
+docker compose -f docker-compose.dev.yml up -d postgres kafka clickhouse redis temporal temporal-ui
 
 # Run the application locally
 go run cmd/server/main.go
 ```
+
+To deploy the released image with external PostgreSQL, see
+[docs/deployment/swr-compose.md](docs/deployment/swr-compose.md).
 
 ## 👨🏻‍💻 Let's Build Together! 👩🏻‍💻
 

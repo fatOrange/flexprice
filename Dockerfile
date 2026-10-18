@@ -63,7 +63,10 @@ WORKDIR /app
 COPY --from=builder /app/server .
 COPY --from=builder /app/migrate .
 COPY --from=builder /app/migrations ./migrations
-COPY --from=builder /app/internal/config ./config
+# Runtime config resources, one copy each. The env default below supplies the
+# RBAC path even when a mounted config.yaml has no rbac section.
+COPY --from=builder /app/internal/config/config.yaml ./config/config.yaml
+COPY --from=builder /app/internal/config/rbac ./config/rbac
 COPY --from=builder /app/assets/fonts ./assets/fonts
 COPY --from=builder /app/assets/typst-templates ./assets/typst-templates
 COPY --from=builder /app/assets/email-templates ./assets/email-templates
@@ -73,6 +76,7 @@ COPY --from=dbmate /out/dbmate /usr/local/bin/dbmate
 RUN chown -R app:app /app
 
 ENV TZ=UTC
+ENV FLEXPRICE_RBAC_ROLES_CONFIG_PATH=/app/config/rbac/roles.json
 USER app
 
 EXPOSE 8080

@@ -116,7 +116,7 @@ flowchart TB
 | Ent schema | `ent/schema/` | Source of truth for PostgreSQL entities (run `make generate-ent`) |
 | SQL migrations | `migrations/postgres/`, `migrations/clickhouse/` | Versioned DDL (parallel to Ent migrations in workflows) |
 | SDKs | `api/go`, `api/python`, `api/typescript`, `api/mcp` | Generated from OpenAPI; custom overlay in `api/custom/` |
-| Ops / local | `docker-compose*.yml`, `Makefile` | Compose stacks, codegen, test shortcuts |
+| Ops / local | `docker-compose.yml` (SWR deploy), `docker-compose.dev.yml` (local dev), `Makefile` | Compose stacks, codegen, test shortcuts |
 
 ---
 

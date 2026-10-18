@@ -1,0 +1,83 @@
+name: Build and push to Huawei SWR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-swr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Only main publishes. Manual dispatches on other branches are skipped so
+    # the shared `latest` tag can never be overwritten by a non-main build.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # SWR organization is fixed to digitprint; SWR credentials stay in repository secrets.
+    env:
+      REGISTRY: swr.cn-east-3.myhuaweicloud.com
+      IMAGE: swr.cn-east-3.myhuaweicloud.com/digitprint/flexprice
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No step pushes over git; keep the auth header out of the build context.
+          persist-credentials: false
+
+      - name: Define image references
+        id: image
+        shell: bash
+        run: |
+          version="sha-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "version-ref=${IMAGE}:${version}" >> "$GITHUB_OUTPUT"
+          echo "latest-ref=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Huawei SWR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          # The trailing Dockerfile stage is the runtime image; no target override needed.
+          platforms: linux/amd64
+          push: true
+          # SWR cannot parse the image index containing BuildKit provenance attestations.
+          provenance: false
+          tags: ${{ steps.image.outputs.version-ref }},${{ steps.image.outputs.latest-ref }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report published images
+        env:
+          VERSION_REF: ${{ steps.image.outputs.version-ref }}
+          LATEST_REF: ${{ steps.image.outputs.latest-ref }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          {
+            printf '### Published images\n'
+            printf '| Purpose | Image reference |\n'
+            printf '| --- | --- |\n'
+            printf '| Deploy (latest, main) | `%s` |\n' "$LATEST_REF"
+            printf '| Rollback (pinned version) | `%s` |\n' "$VERSION_REF"
+            printf '\nDigest: `%s`\n' "$DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

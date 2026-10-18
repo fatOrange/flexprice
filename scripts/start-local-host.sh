@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # start-local-host.sh — FlexPrice on host PostgreSQL/Redis + Compose Kafka/ClickHouse/Temporal.
+# The Compose dependency layer is docker-compose.dev.yml; the root
+# docker-compose.yml is the released SWR deployment (external PostgreSQL).
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -14,11 +16,12 @@ PG_DB=flexprice
 PG_USER=flexprice
 PG_BOOTSTRAP_DB=postgres
 CH_MEMORY='--max_memory_usage=90000000000'
-# make init-kafka's list + the two topics it does not create.
-TOPICS=(events events_lazy events_dlq events_backfill events_post_processing
-        events_post_processing_backfill system_events wallet_alert onboarding_events
-        staging_benchmarking prod_events_v4 staging_events_backfill staging_events
-        raw_events flexprice_system_events)
+# Keep in sync with `make init-kafka` / configs/deploy/kafka-topics.json.
+TOPICS=(events events_lazy events_bulk events_dlq events_backfill
+        event_processing_dlq event_processing_lazy_dlq
+        meter_usage_tracking_service_dlq meter_usage_tracking_service_lazy_dlq
+        system_events flexprice_system_events wallet_alert onboarding_events raw_events prod_events_v4
+        analytics.meter_usage.sink.realtime activity_logs activity_logs_dlq)
 
 usage() {
   cat <<'EOF'
@@ -76,6 +79,9 @@ export FLEXPRICE_REDIS_PORT=6379
 export FLEXPRICE_REDIS_CLUSTER_MODE=false
 export FLEXPRICE_KAFKA_BROKERS=localhost:29092
 export FLEXPRICE_CLICKHOUSE_ADDRESS=localhost:9000
+# Align the webhook consumer with the topic set created by `make init-kafka`
+# (config.yaml's default is flexprice_system_events).
+export FLEXPRICE_WEBHOOK_TOPIC=system_events
 
 : "${FLEXPRICE_POSTGRES_PASSWORD:?FLEXPRICE_POSTGRES_PASSWORD missing in .env.local}"
 : "${FLEXPRICE_CLICKHOUSE_PASSWORD:?FLEXPRICE_CLICKHOUSE_PASSWORD missing in .env.local}"
@@ -96,7 +102,7 @@ redis_ok() { [ "$(redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null)" = "PONG" ]; 
 
 # Host run composes the base stack with the temporal-dev overlay; postgres,
 # redis and the base temporal services stay unused on the host path.
-compose() { docker compose -f docker-compose.yml -f docker-compose.host.yml "$@"; }
+compose() { docker compose -f docker-compose.dev.yml -f docker-compose.host.yml "$@"; }
 compose_wait() { compose up -d --wait "$@"; }
 compose_exec() { compose exec -T "$@"; }
 
@@ -162,13 +168,8 @@ setup_clickhouse() {
 }
 
 setup_kafka() {
-  echo "==> Kafka: make init-kafka + raw_events/flexprice_system_events"
+  echo "==> Kafka: make init-kafka"
   make init-kafka
-  local t
-  for t in raw_events flexprice_system_events; do
-    kafka_exec --create --if-not-exists --topic "$t" --partitions 3 \
-      --replication-factor 1 --config cleanup.policy=delete --config retention.ms=604800000
-  done
 }
 
 validate_postgres() {
@@ -188,7 +189,7 @@ validate_postgres() {
 validate_kafka() {
   local existing missing="" t
   existing="$(kafka_exec --list 2>/dev/null)" || \
-    die "cannot list Kafka topics — check 'docker compose ps kafka'"
+    die "cannot list Kafka topics — check 'docker compose -f docker-compose.dev.yml ps kafka'"
   for t in "${TOPICS[@]}"; do
     grep -qx "$t" <<<"$existing" || missing="$missing $t"
   done
@@ -199,7 +200,7 @@ validate_kafka() {
 validate_clickhouse() {
   local out
   out="$(ch_exec --query "SELECT count() FROM system.tables WHERE database = 'flexprice' AND name = 'events'")" || \
-    die "ClickHouse not reachable — check 'docker compose ps clickhouse'"
+    die "ClickHouse not reachable — check 'docker compose -f docker-compose.dev.yml ps clickhouse'"
   [ "$out" = "1" ] || die "ClickHouse: flexprice.events table missing — run --setup"
   echo "==> ClickHouse: ready (events table present)"
 }

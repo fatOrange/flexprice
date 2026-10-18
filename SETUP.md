@@ -11,6 +11,11 @@
 
 ## Quick Setup with Docker Compose
 
+Local development uses `docker-compose.dev.yml`; the root
+`docker-compose.yml` is the single-host SWR deployment with external
+PostgreSQL. `make dev-setup` and the other `make` targets below select the dev
+file automatically.
+
 The easiest way to get started is using our Docker Compose setup:
 
 ```bash
@@ -27,7 +32,7 @@ This command will:
 1. Start all required infrastructure (PostgreSQL, Kafka, ClickHouse, Temporal)
 2. Build the FlexPrice application image
 3. Run database migrations and initialize Kafka
-4. Start all FlexPrice services (API, Consumer, Worker)
+4. Start the FlexPrice app in local mode (API + Kafka consumers + Temporal worker)
 
 ## Accessing Services
 
@@ -62,12 +67,15 @@ make start-flexprice
 If you prefer to run the application directly:
 
 ```bash
-# Start the required infrastructure
-docker compose up -d postgres kafka clickhouse redis temporal temporal-ui
+# Start the required local infrastructure (dev compose file)
+docker compose -f docker-compose.dev.yml up -d postgres kafka clickhouse redis temporal temporal-ui
 
 # Run the application locally
 go run cmd/server/main.go
 ```
+
+For the released SWR image on a single host with external PostgreSQL, see
+[`docs/deployment/swr-compose.md`](docs/deployment/swr-compose.md).
 
 ## Development Credentials
 
@@ -127,13 +135,13 @@ docker info
 2. Check the status of all containers:
 
 ```bash
-docker compose ps
+docker compose -f docker-compose.dev.yml ps
 ```
 
 3. View logs for a specific service:
 
 ```bash
-docker compose logs [service_name]
+docker compose -f docker-compose.dev.yml logs [service_name]
 ```
 
 ### Database Connection Issues
@@ -141,15 +149,15 @@ docker compose logs [service_name]
 1. Check database logs:
 
 ```bash
-docker compose logs postgres
-docker compose logs clickhouse
+docker compose -f docker-compose.dev.yml logs postgres
+docker compose -f docker-compose.dev.yml logs clickhouse
 ```
 
 2. Verify the database is running:
 
 ```bash
-docker compose ps postgres
-docker compose ps clickhouse
+docker compose -f docker-compose.dev.yml ps postgres
+docker compose -f docker-compose.dev.yml ps clickhouse
 ```
 
 ### Kafka Issues
@@ -157,13 +165,13 @@ docker compose ps clickhouse
 1. Verify Kafka is running:
 
 ```bash
-docker compose logs kafka
+docker compose -f docker-compose.dev.yml logs kafka
 ```
 
 2. Check topic list:
 
 ```bash
-docker compose exec kafka kafka-topics --bootstrap-server kafka:9092 --list
+docker compose -f docker-compose.dev.yml exec kafka kafka-topics --bootstrap-server kafka:9092 --list
 ```
 
 3. View Kafka UI at http://localhost:8084

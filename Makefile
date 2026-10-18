@@ -6,6 +6,16 @@ swagger-clean:
 # expecting $(GOPATH)/bin/swag (install-swag skipped when `which swag` succeeds).
 SWAG_V2_PKG := github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
 
+# Local development stack. The root docker-compose.yml is the released SWR
+# deployment (external PostgreSQL, single local-mode process); every local
+# target below uses docker-compose.dev.yml so both can coexist.
+LOCAL_COMPOSE ?= docker compose -f docker-compose.dev.yml
+
+# Single-host SWR deployment. Requires the env file created from
+# configs/deploy/deploy.env.example.
+DEPLOY_ENV_FILE ?= .env.deploy
+DEPLOY_COMPOSE ?= docker compose --env-file $(DEPLOY_ENV_FILE)
+
 .PHONY: install-swag
 install-swag:
 	go install $(SWAG_V2_PKG)
@@ -55,11 +65,11 @@ swagger-fix-refs:
 
 .PHONY: up
 up:
-	docker compose up -d --build
+	$(LOCAL_COMPOSE) up -d --build
 
 .PHONY: down
 down:
-	docker compose down
+	$(LOCAL_COMPOSE) down
 
 .PHONY: run-server
 run-server:
@@ -336,10 +346,10 @@ seed-svix-docker:
 migrate-postgres:
 	@echo "Running Postgres migrations..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if docker compose exec -T postgres pg_isready -U flexprice -d flexprice >/dev/null 2>&1; then \
+		if $(LOCAL_COMPOSE) exec -T postgres pg_isready -U flexprice -d flexprice >/dev/null 2>&1; then \
 			echo "Postgres is ready"; \
-			docker compose exec -T postgres psql -U flexprice -d flexprice -c "CREATE SCHEMA IF NOT EXISTS extensions;"; \
-			docker compose exec -T postgres psql -U flexprice -d flexprice -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" SCHEMA extensions;"; \
+			$(LOCAL_COMPOSE) exec -T postgres psql -U flexprice -d flexprice -c "CREATE SCHEMA IF NOT EXISTS extensions;"; \
+			$(LOCAL_COMPOSE) exec -T postgres psql -U flexprice -d flexprice -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" SCHEMA extensions;"; \
 			echo "Postgres migrations complete"; \
 			exit 0; \
 		fi; \
@@ -352,12 +362,12 @@ migrate-postgres:
 migrate-clickhouse:
 	@echo "Running Clickhouse migrations..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if docker compose exec -T clickhouse clickhouse-client --user=flexprice --password=flexprice123 --database=flexprice --query "SELECT 1" >/dev/null 2>&1; then \
+		if $(LOCAL_COMPOSE) exec -T clickhouse clickhouse-client --user=flexprice --password=flexprice123 --database=flexprice --query "SELECT 1" >/dev/null 2>&1; then \
 			echo "Clickhouse is ready"; \
 			for file in migrations/clickhouse/*.sql; do \
 				if [ -f "$$file" ]; then \
 					echo "Running migration: $$file"; \
-					docker compose exec -T clickhouse clickhouse-client --user=flexprice --password=flexprice123 --database=flexprice --multiquery < "$$file" || true; \
+					$(LOCAL_COMPOSE) exec -T clickhouse clickhouse-client --user=flexprice --password=flexprice123 --database=flexprice --multiquery < "$$file" || true; \
 				fi; \
 			done; \
 			echo "Clickhouse migrations complete"; \
@@ -371,8 +381,16 @@ migrate-clickhouse:
 # Seed initial data
 seed-db:
 	@echo "Running Seed data migration..."
-	@docker compose exec -T postgres psql -U flexprice -d flexprice -f /docker-entrypoint-initdb.d/V1__seed.sql
+	@$(LOCAL_COMPOSE) exec -T postgres psql -U flexprice -d flexprice -f /docker-entrypoint-initdb.d/V1__seed.sql
 	@echo "Postgres seed data migration complete"
+
+# Topic set for local development. The deployment uses
+# configs/deploy/kafka-topics.json through `./migrate kafka`; keep both in sync.
+KAFKA_TOPICS := events events_lazy events_bulk events_dlq events_backfill \
+    event_processing_dlq event_processing_lazy_dlq \
+    meter_usage_tracking_service_dlq meter_usage_tracking_service_lazy_dlq \
+    system_events flexprice_system_events wallet_alert onboarding_events raw_events prod_events_v4 \
+    analytics.meter_usage.sink.realtime activity_logs activity_logs_dlq
 
 # Initialize kafka topics
 .PHONY: init-kafka
@@ -380,29 +398,14 @@ init-kafka:
 	@echo "Creating Kafka topics..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 		echo "Attempt $$i: Checking if Kafka is ready..."; \
-		if docker compose exec -T kafka kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; then \
+		if $(LOCAL_COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; then \
 			echo "Kafka is ready!"; \
-			for topic in \
-				events \
-				events_lazy \
-				events_dlq \
-				events_backfill \
-				events_post_processing \
-				events_post_processing_backfill \
-				system_events \
-				wallet_alert \
-				activity_logs \
-				activity_logs_dlq \
-				onboarding_events \
-				staging_benchmarking \
-				prod_events_v4 \
-				staging_events_backfill \
-				staging_events; do \
+			for topic in $(KAFKA_TOPICS); do \
 				echo "Creating topic: $$topic"; \
-				docker compose exec -T kafka kafka-topics --create --if-not-exists \
+				$(LOCAL_COMPOSE) exec -T kafka kafka-topics --create --if-not-exists \
 					--bootstrap-server kafka:9092 \
 					--topic $$topic \
-					--partitions 1 \
+					--partitions 3 \
 					--replication-factor 1 \
 					--config cleanup.policy=delete \
 					--config retention.ms=604800000; \
@@ -416,11 +419,11 @@ init-kafka:
 	echo "Error: Kafka failed to become ready after 10 attempts"; \
 	exit 1
 
-# Clean all docker containers and volumes related to the project
+# Clean all local docker containers and volumes related to the project
 .PHONY: clean-docker
 clean-docker:
 	@echo "Cleaning all docker containers and volumes..."
-	@docker compose down -v
+	@$(LOCAL_COMPOSE) down -v
 	@docker container prune -f
 	@docker volume rm $$(docker volume ls -q | grep flexprice) 2>/dev/null || true
 	@echo "Docker cleanup complete"
@@ -434,46 +437,89 @@ setup-local: up init-db init-kafka
 .PHONY: clean-start
 clean-start:
 	@make down
-	@docker compose down -v
+	@$(LOCAL_COMPOSE) down -v
 	@make setup-local
 
 # Build the flexprice image separately
 .PHONY: build-image
 build-image:
 	@echo "Building flexprice image..."
-	@docker compose build flexprice-build
+	@$(LOCAL_COMPOSE) build flexprice
 	@echo "Flexprice image built successfully"
 
-# Start only the flexprice services
+# Start only the flexprice service (local mode: API + consumers + Temporal worker)
 .PHONY: start-flexprice
 start-flexprice:
-	@echo "Starting flexprice services..."
-	@docker compose up -d flexprice-api flexprice-consumer flexprice-worker
-	@echo "Flexprice services started successfully"
+	@echo "Starting flexprice service..."
+	@$(LOCAL_COMPOSE) up -d flexprice
+	@echo "Flexprice service started successfully"
 
-# Stop only the flexprice services
+# Stop only the flexprice service
 .PHONY: stop-flexprice
 stop-flexprice:
-	@echo "Stopping flexprice services..."
-	@docker compose stop flexprice-api flexprice-consumer flexprice-worker
-	@echo "Flexprice services stopped successfully"
+	@echo "Stopping flexprice service..."
+	@$(LOCAL_COMPOSE) stop flexprice
+	@echo "Flexprice service stopped successfully"
 
-# Restart only the flexprice services
+# Restart only the flexprice service
 .PHONY: restart-flexprice
 restart-flexprice: stop-flexprice start-flexprice
-	@echo "Flexprice services restarted successfully"
+	@echo "Flexprice service restarted successfully"
+
+# ---------------------------------------------------------------------------
+# Single-host SWR deployment. These target the root docker-compose.yml, which
+# runs the released image in local mode against an external PostgreSQL.
+# Create .env.deploy from configs/deploy/deploy.env.example first.
+# ---------------------------------------------------------------------------
+.PHONY: deploy-config deploy-pull deploy-migrate deploy-migrate-status deploy-init deploy-topics deploy-up deploy-down deploy-ps deploy-logs
+
+deploy-config:
+	@$(DEPLOY_COMPOSE) config >/dev/null
+	@echo "compose configuration OK"
+
+deploy-pull:
+	$(DEPLOY_COMPOSE) pull flexprice
+
+# Schema migrations only. Run before deploy-up on every upgrade.
+deploy-migrate:
+	$(DEPLOY_COMPOSE) --profile init run --rm migrate-postgres
+	$(DEPLOY_COMPOSE) --profile init run --rm migrate-clickhouse
+
+# Show applied/pending PostgreSQL migrations without applying anything.
+deploy-migrate-status:
+	$(DEPLOY_COMPOSE) --profile init run --rm migrate-postgres ./migrate postgres up --status
+
+# Fresh install: PostgreSQL and ClickHouse schema only. No tenant or user is
+# created; bootstrap through POST /v1/auth/signup after deploy-up.
+deploy-init: deploy-migrate
+
+# Reconcile Kafka topics without starting the app.
+deploy-topics:
+	$(DEPLOY_COMPOSE) --profile init run --rm kafka-init
+
+deploy-up:
+	$(DEPLOY_COMPOSE) up -d
+
+deploy-down:
+	$(DEPLOY_COMPOSE) down
+
+deploy-ps:
+	$(DEPLOY_COMPOSE) ps
+
+deploy-logs:
+	$(DEPLOY_COMPOSE) logs -f flexprice
 
 # Full developer setup with clear instructions
 .PHONY: dev-setup
 dev-setup:
 	@echo "Setting up FlexPrice development environment..."
 	@echo "Step 1: Starting infrastructure services..."
-	@docker compose up -d postgres kafka clickhouse redis temporal temporal-ui
+	@$(LOCAL_COMPOSE) up -d postgres kafka clickhouse redis temporal temporal-ui
 	@echo "Step 2: Building FlexPrice application image..."
 	@make build-image
 	@echo "Step 3: Running database migrations and initializing Kafka..."
 	@make migrate-postgres migrate-clickhouse migrate-ent seed-db init-kafka
-	@echo "Step 4: Starting FlexPrice services..."
+	@echo "Step 4: Starting FlexPrice service (local mode: API + consumers + worker)..."
 	@make start-flexprice
 	@echo ""
 	@echo "✅ FlexPrice development environment is now ready!"
@@ -488,7 +534,7 @@ dev-setup:
 	@echo "   (pass as: -H 'x-api-key: sk_local_flexprice_test_key')"
 	@echo ""
 	@echo "💡 Useful commands:"
-	@echo "   - make restart-flexprice  # Restart FlexPrice services"
+	@echo "   - make restart-flexprice  # Restart FlexPrice service"
 	@echo "   - make down              # Stop all services"
 	@echo "   - make clean-start       # Clean everything and start fresh"
 
@@ -499,12 +545,12 @@ apply-migration:
 		exit 1; \
 	fi
 	@echo "Applying migration file: $(file)"
-	@docker compose exec -T postgres psql -U flexprice -d flexprice < $(file)
+	@$(LOCAL_COMPOSE) exec -T postgres psql -U flexprice -d flexprice < $(file)
 	@echo "Migration applied successfully"
 
 .PHONY: docker-build-local
 docker-build-local:
-	docker compose build flexprice-build
+	$(LOCAL_COMPOSE) build flexprice
 
 .PHONY: install-typst
 install-typst:

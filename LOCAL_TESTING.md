@@ -72,11 +72,12 @@ Notes:
   **never resets an existing role's password** and never grants SUPERUSER.
   Schema changes only happen with explicit `--setup`.
 - Both the `--setup` and no-arg runs bring up only `kafka`, `clickhouse`, and
-  `temporal-dev` (the latter from `docker-compose.host.yml`) and wait until all
-  three are healthy. **No PostgreSQL or Redis container is started**, and the
-  base stack's Postgres-backed `temporal` service is not started either.
+  `temporal-dev` (the latter from `docker-compose.host.yml`) from the
+  `docker-compose.dev.yml` base and wait until all three are healthy. **No
+  PostgreSQL or Redis container is started**, and the base stack's
+  Postgres-backed `temporal` service is not started either.
   `docker-compose.host.yml` adds `temporal-dev` with no `depends_on`, so Compose
-  does not pull `postgres` or the base `temporal` service.
+  does not pull the dev PostgreSQL or the base `temporal` service.
 - Temporal points at the Dockerized **dev server**: both runs export
   `FLEXPRICE_TEMPORAL_ADDRESS=127.0.0.1:7233` (namespace `default`, TLS off)
   and start `temporal-dev`. The script does **not** set
@@ -125,8 +126,12 @@ open -a OrbStack && sleep 3
 
 ### 2. Start local infrastructure
 
+The local stack lives in `docker-compose.dev.yml`; the root
+`docker-compose.yml` is the single-host SWR deployment with external
+PostgreSQL.
+
 ```bash
-docker compose up -d postgres kafka clickhouse
+docker compose -f docker-compose.dev.yml up -d postgres kafka clickhouse redis
 sleep 10   # wait for Kafka to fully initialise
 ```
 
@@ -135,11 +140,7 @@ sleep 10   # wait for Kafka to fully initialise
 Run once (idempotent — safe to repeat):
 
 ```bash
-for topic in raw_events events events_lazy events_post_processing \
-             events_backfill system_events onboarding_events balance_alert; do
-  docker compose exec kafka kafka-topics --bootstrap-server kafka:9092 \
-    --create --topic $topic --partitions 3 --replication-factor 1 2>/dev/null || true
-done
+make init-kafka
 ```
 
 ### 4. Run migrations
@@ -197,7 +198,7 @@ curl http://localhost:8080/v1/meters \
 pkill -f "go run cmd/server"
 
 # Stop Docker services
-docker compose down
+docker compose -f docker-compose.dev.yml down
 ```
 
 ---
@@ -209,14 +210,14 @@ docker compose down
 
 ```bash
 # PostgreSQL shell (Docker-backed route only)
-docker compose exec postgres psql -U flexprice -d flexprice
+docker compose -f docker-compose.dev.yml exec postgres psql -U flexprice -d flexprice
 
 # ClickHouse shell
-docker compose exec clickhouse clickhouse-client \
+docker compose -f docker-compose.dev.yml exec clickhouse clickhouse-client \
   --user=flexprice --password=flexprice123 --database=flexprice
 
 # Quick ClickHouse queries
-docker compose exec clickhouse clickhouse-client \
+docker compose -f docker-compose.dev.yml exec clickhouse clickhouse-client \
   --user=flexprice --password=flexprice123 --database=flexprice \
   --query="SELECT id, external_customer_id, event_name FROM events ORDER BY timestamp DESC LIMIT 10 FORMAT PrettyCompact"
 ```

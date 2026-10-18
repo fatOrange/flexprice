@@ -1,5 +1,9 @@
 # Deploy workflow – GitHub Actions inputs
 
+This page covers the ECS deploy workflow. For the single-host Compose
+deployment that runs the SWR image with external PostgreSQL, see
+[`docs/deployment/swr-compose.md`](../deployment/swr-compose.md).
+
 Configure these in the repo: **Settings → Secrets and variables → Actions**.
 
 ---

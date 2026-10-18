@@ -1,0 +1,25 @@
+{
+  "defaults": {
+    "replicationFactor": 1,
+    "retentionMs": 604800000
+  },
+  "topics": {
+    "events": { "partitions": 6 },
+    "events_lazy": { "partitions": 6 },
+    "events_bulk": { "partitions": 6 },
+    "events_dlq": { "partitions": 3 },
+    "events_backfill": { "partitions": 6 },
+    "event_processing_dlq": { "partitions": 3 },
+    "event_processing_lazy_dlq": { "partitions": 3 },
+    "meter_usage_tracking_service_dlq": { "partitions": 3 },
+    "meter_usage_tracking_service_lazy_dlq": { "partitions": 3 },
+    "system_events": { "partitions": 3 },
+    "wallet_alert": { "partitions": 3 },
+    "onboarding_events": { "partitions": 3 },
+    "raw_events": { "partitions": 6 },
+    "prod_events_v4": { "partitions": 6 },
+    "analytics.meter_usage.sink.realtime": { "partitions": 6 },
+    "activity_logs": { "partitions": 3 },
+    "activity_logs_dlq": { "partitions": 3 }
+  }
+}

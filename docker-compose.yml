@@ -1,25 +1,96 @@
-services:
-  postgres:
-    image: postgres:17
-    ports:
-      - 127.0.0.1:5432:5432
-    environment:
-      POSTGRES_USER: flexprice
-      POSTGRES_PASSWORD: flexprice123
-      POSTGRES_DB: flexprice
-    volumes:
-      - ./migrations/postgres:/docker-entrypoint-initdb.d/
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: pg_isready -U flexprice -d flexprice
-      interval: 5s
-      timeout: 3s
-      retries: 100
+# Single-host deployment stack.
+#
+# Runs the released image from Huawei SWR in deployment.mode=local: one process
+# serves the API, every Kafka consumer registered for local mode, and the
+# Temporal worker. PostgreSQL is external (managed or self-hosted outside this
+# stack); Temporal persists to the same external PostgreSQL server.
+#
+# Local development uses docker-compose.dev.yml instead. This file must not
+# fall back to the dev database or the sample API key baked into config.yaml:
+# every credential below comes from the deployment env file.
+#
+#   cp configs/deploy/deploy.env.example .env.deploy
+#   # edit .env.deploy, then:
+#   docker compose --env-file .env.deploy config >/dev/null
+#   docker compose --env-file .env.deploy --profile init run --rm migrate-postgres
+#   docker compose --env-file .env.deploy --profile init run --rm migrate-clickhouse
+#   docker compose --env-file .env.deploy up -d
+#
+# Schema migrations create no tenant or user. After the app starts, bootstrap
+# through POST /v1/auth/signup; see docs/deployment/swr-compose.md.
+#
+# See docs/deployment/swr-compose.md for the full runbook.
 
+name: flexprice
+
+x-flexprice-image: &flexprice-image
+  image: ${FLEXPRICE_IMAGE:-swr.cn-east-3.myhuaweicloud.com/digitprint/flexprice:latest}
+  # The SWR workflow publishes linux/amd64 only.
+  platform: ${FLEXPRICE_PLATFORM:-linux/amd64}
+
+x-app-env: &app-env
+  FLEXPRICE_DEPLOYMENT_MODE: local
+  FLEXPRICE_SERVER_ADDRESS: ":8080"
+  FLEXPRICE_ACTIVITY_ENABLED: "true"
+
+  # External PostgreSQL. No default host/user/password: inheriting the dev
+  # values from config.yaml is exactly what this deployment must not do.
+  FLEXPRICE_POSTGRES_HOST: ${FLEXPRICE_POSTGRES_HOST:?set FLEXPRICE_POSTGRES_HOST in .env.deploy}
+  FLEXPRICE_POSTGRES_PORT: ${FLEXPRICE_POSTGRES_PORT:-5432}
+  FLEXPRICE_POSTGRES_USER: ${FLEXPRICE_POSTGRES_USER:?set FLEXPRICE_POSTGRES_USER in .env.deploy}
+  FLEXPRICE_POSTGRES_PASSWORD: ${FLEXPRICE_POSTGRES_PASSWORD:?set FLEXPRICE_POSTGRES_PASSWORD in .env.deploy}
+  FLEXPRICE_POSTGRES_DBNAME: ${FLEXPRICE_POSTGRES_DBNAME:-flexprice}
+  FLEXPRICE_POSTGRES_SSLMODE: ${FLEXPRICE_POSTGRES_SSLMODE:-require}
+  FLEXPRICE_POSTGRES_READER_HOST: "${FLEXPRICE_POSTGRES_READER_HOST:-}"
+  FLEXPRICE_POSTGRES_READER_PORT: ${FLEXPRICE_POSTGRES_READER_PORT:-0}
+
+  FLEXPRICE_KAFKA_BROKERS: kafka:9092
+  FLEXPRICE_KAFKA_TOPIC: ${FLEXPRICE_KAFKA_TOPIC:-events}
+  FLEXPRICE_KAFKA_TOPIC_LAZY: ${FLEXPRICE_KAFKA_TOPIC_LAZY:-events_lazy}
+  FLEXPRICE_KAFKA_TOPIC_BULK: ${FLEXPRICE_KAFKA_TOPIC_BULK:-events_bulk}
+  FLEXPRICE_KAFKA_TOPIC_DLQ: ${FLEXPRICE_KAFKA_TOPIC_DLQ:-events_dlq}
+  FLEXPRICE_RAW_EVENT_CONSUMPTION_TOPIC: ${FLEXPRICE_RAW_EVENT_CONSUMPTION_TOPIC:-raw_events}
+  FLEXPRICE_RAW_EVENT_CONSUMPTION_OUTPUT_TOPIC: ${FLEXPRICE_RAW_EVENT_CONSUMPTION_OUTPUT_TOPIC:-events}
+  # The image's config.yaml defaults this to flexprice_system_events; the
+  # deployment topic set (configs/deploy/kafka-topics.json) uses system_events.
+  FLEXPRICE_WEBHOOK_TOPIC: ${FLEXPRICE_WEBHOOK_TOPIC:-system_events}
+
+  FLEXPRICE_CLICKHOUSE_ADDRESS: clickhouse:9000
+  FLEXPRICE_CLICKHOUSE_USERNAME: ${CLICKHOUSE_USER:-flexprice}
+  FLEXPRICE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env.deploy}
+  FLEXPRICE_CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB:-flexprice}
+
+  FLEXPRICE_REDIS_HOST: redis
+  FLEXPRICE_REDIS_PORT: "6379"
+  FLEXPRICE_REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+  FLEXPRICE_REDIS_CLUSTER_MODE: "false"
+  FLEXPRICE_CACHE_ENABLED: "true"
+  FLEXPRICE_CACHE_REDIS_ENABLED: "true"
+
+  FLEXPRICE_TEMPORAL_ADDRESS: temporal:7233
+  FLEXPRICE_TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+  FLEXPRICE_TEMPORAL_TLS: "false"
+
+  FLEXPRICE_AUTH_PROVIDER: ${FLEXPRICE_AUTH_PROVIDER:-flexprice}
+  FLEXPRICE_AUTH_SECRET: ${FLEXPRICE_AUTH_SECRET:?set FLEXPRICE_AUTH_SECRET in .env.deploy}
+  # Required to be explicit: config.yaml ships a development API key. Set this
+  # to {} to disable it, or to a map of SHA-256(raw key) -> key details.
+  FLEXPRICE_AUTH_API_KEY_KEYS: "${FLEXPRICE_AUTH_API_KEY_KEYS:?set FLEXPRICE_AUTH_API_KEY_KEYS to an empty JSON object or your key map}"
+  FLEXPRICE_SECRETS_ENCRYPTION_KEY: ${FLEXPRICE_SECRETS_ENCRYPTION_KEY:?set FLEXPRICE_SECRETS_ENCRYPTION_KEY in .env.deploy}
+
+  SERVICE_NAME: ${SERVICE_NAME:-flexprice}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  FLEXPRICE_LOGGING_LEVEL: ${FLEXPRICE_LOGGING_LEVEL:-info}
+  FLEXPRICE_OTEL_ENABLED: ${FLEXPRICE_OTEL_ENABLED:-false}
+
+x-kafka-env: &kafka-env
+  FLEXPRICE_KAFKA_BROKERS: kafka:9092
+
+services:
   kafka:
     image: confluentinc/cp-kafka:7.7.1
     ports:
-      - "127.0.0.1:29092:29092"
+      - "${KAFKA_BIND:-127.0.0.1}:29092:29092"
     environment:
       CLUSTER_ID: ca497efe-9f82-4b84-890b-d9969a9a2e1c
       KAFKA_BROKER_ID: 0
@@ -34,25 +105,51 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Topics are created explicitly by kafka-init before the app starts.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
+
+  # One-shot topic reconcile. Reuses `./migrate kafka` (the same entry point the
+  # Helm chart's migration job uses), so create-only/grow-only semantics apply
+  # and reruns are idempotent. Override FLEXPRICE_KAFKA_TOPICS to replace the file.
+  kafka-init:
+    <<: *flexprice-image
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        if [ -z "$${FLEXPRICE_KAFKA_TOPICS:-}" ]; then
+          FLEXPRICE_KAFKA_TOPICS="$$(cat /etc/flexprice/kafka-topics.json)"
+          export FLEXPRICE_KAFKA_TOPICS
+        fi
+        exec ./migrate kafka
+    environment:
+      <<: *kafka-env
+      FLEXPRICE_KAFKA_TOPICS: "${FLEXPRICE_KAFKA_TOPICS:-}"
+    volumes:
+      - ./configs/deploy/kafka-topics.json:/etc/flexprice/kafka-topics.json:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.9-alpine
     ports:
-      - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9009:9009"
+      - "${CLICKHOUSE_BIND:-127.0.0.1}:8123:8123"
+      - "${CLICKHOUSE_BIND:-127.0.0.1}:9000:9000"
     environment:
-      CLICKHOUSE_USER: flexprice
-      CLICKHOUSE_PASSWORD: flexprice123
-      CLICKHOUSE_DB: flexprice
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-flexprice}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env.deploy}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-flexprice}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse-data:/var/lib/clickhouse
@@ -65,186 +162,148 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$${REDIS_PASSWORD:-}" ]; then
+          exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+        fi
+        exec redis-server --appendonly yes
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", 'if [ -n "$${REDIS_PASSWORD:-}" ]; then redis-cli -a "$${REDIS_PASSWORD}" ping; else redis-cli ping; fi']
       interval: 5s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
-  kafka-ui:
-    image: ghcr.io/kafbat/kafka-ui:main
-    profiles:
-      - dev
-    depends_on:
-      - kafka
-    ports:
-      - "127.0.0.1:8084:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      DYNAMIC_CONFIG_ENABLED: "true"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://kafka-ui:8080/"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-
+  # Temporal persists to the external PostgreSQL server. Both databases must
+  # exist and be owned by (or grant CREATE to) TEMPORAL_POSTGRES_USER before
+  # this starts; SKIP_DB_CREATE=true keeps the container from trying to create
+  # them with credentials that should not be superuser.
   temporal:
     image: temporalio/auto-setup:1.26.2
     ports:
-      - "7233:7233"
+      - "${TEMPORAL_BIND:-127.0.0.1}:7233:7233"
     environment:
-      - ENABLE_ES=false
-      - DB=postgres12
-      - DB_PORT=5432
-      - DB_USER=flexprice
-      - DB_PWD=flexprice123
-      - DB_NAME=temporal
-      - DB_HOST=postgres
-      - POSTGRES_USER=flexprice
-      - POSTGRES_PWD=flexprice123
-      - POSTGRES_SEEDS=postgres
-      - TEMPORAL_PERSISTENCE_SCHEMA_DIR=/etc/temporal/schema/postgresql/v96/temporal/versioned
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  temporal-ui:
-    image: temporalio/ui:2.31.2
-    ports:
-      - "127.0.0.1:8088:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-    depends_on:
-      - temporal
-
-  # Build stage as a separate service that other services can depend on
-  flexprice-build:
-    image: flexprice-app:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-    profiles:
-      - build-only
-    command: ["echo", "Build complete"]
-
-  flexprice-api:
-    image: flexprice-app:local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      temporal:
-        condition: service_started
-      redis:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      - FLEXPRICE_DEPLOYMENT_MODE=api
-      - FLEXPRICE_ACTIVITY_ENABLED=true
-      # Override config.yaml settings for containerized environment
-      - FLEXPRICE_POSTGRES_HOST=postgres
-      - FLEXPRICE_POSTGRES_READER_HOST=postgres
-      - FLEXPRICE_KAFKA_BROKERS=kafka:9092
-      - FLEXPRICE_CLICKHOUSE_ADDRESS=clickhouse:9000
-      - FLEXPRICE_TEMPORAL_ADDRESS=temporal:7233
-      # Redis cache: single-node container, so cluster mode must be off
-      - FLEXPRICE_REDIS_HOST=redis
-      - FLEXPRICE_REDIS_CLUSTER_MODE=false
-      - FLEXPRICE_CACHE_ENABLED=true
-      - FLEXPRICE_CACHE_REDIS_ENABLED=true
-      # Auth: API key mode — raw key is sk_local_flexprice_test_key
-      - FLEXPRICE_AUTH_PROVIDER=api_key
-      - FLEXPRICE_AUTH_API_KEY_HEADER=x-api-key
-      - 'FLEXPRICE_AUTH_API_KEY_KEYS={"0cfd568f22158887f8b77bc019fb245b1f14077b80936342b052985efa7de46c":{"tenant_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","name":"Local Dev API Key","is_active":true}}'
+      DB: postgres12
+      DB_PORT: ${TEMPORAL_POSTGRES_PORT:-5432}
+      POSTGRES_SEEDS: ${TEMPORAL_POSTGRES_HOST:?set TEMPORAL_POSTGRES_HOST in .env.deploy}
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?set TEMPORAL_POSTGRES_USER in .env.deploy}
+      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?set TEMPORAL_POSTGRES_PASSWORD in .env.deploy}
+      DBNAME: ${TEMPORAL_DB:-temporal}
+      VISIBILITY_DBNAME: ${TEMPORAL_VISIBILITY_DB:-temporal_visibility}
+      SKIP_DB_CREATE: "true"
+      ENABLE_ES: "false"
+      DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      # TLS is configured twice in this image:
+      #   - POSTGRES_TLS_* is read by auto-setup.sh for the temporal-sql-tool
+      #     schema create/update connections.
+      #   - SQL_* is read by config_template.yaml for the running server's
+      #     default and visibility SQL connections.
+      # Set both from the same .env.deploy values. The server key is
+      # SQL_HOST_NAME; SQL_SERVER_NAME is not part of the 1.26.2 template.
+      # Verification flags are inverses: SQL_HOST_VERIFICATION must be false
+      # when POSTGRES_TLS_DISABLE_HOST_VERIFICATION is true.
+      POSTGRES_TLS_ENABLED: ${TEMPORAL_POSTGRES_TLS_ENABLED:-false}
+      POSTGRES_TLS_DISABLE_HOST_VERIFICATION: ${TEMPORAL_POSTGRES_TLS_DISABLE_HOST_VERIFICATION:-false}
+      POSTGRES_TLS_CA_FILE: ${TEMPORAL_POSTGRES_TLS_CA_FILE:-}
+      POSTGRES_TLS_CERT_FILE: ${TEMPORAL_POSTGRES_TLS_CERT_FILE:-}
+      POSTGRES_TLS_KEY_FILE: ${TEMPORAL_POSTGRES_TLS_KEY_FILE:-}
+      POSTGRES_TLS_SERVER_NAME: ${TEMPORAL_POSTGRES_TLS_SERVER_NAME:-}
+      SQL_TLS_ENABLED: ${TEMPORAL_POSTGRES_TLS_ENABLED:-false}
+      SQL_HOST_VERIFICATION: ${TEMPORAL_POSTGRES_TLS_HOST_VERIFICATION:-true}
+      SQL_CA: ${TEMPORAL_POSTGRES_TLS_CA_FILE:-}
+      SQL_CERT: ${TEMPORAL_POSTGRES_TLS_CERT_FILE:-}
+      SQL_CERT_KEY: ${TEMPORAL_POSTGRES_TLS_KEY_FILE:-}
+      SQL_HOST_NAME: ${TEMPORAL_POSTGRES_TLS_SERVER_NAME:-}
     volumes:
-      - ./internal/config:/app/internal/config
+      # Mount the directory, not an individual file: with TLS disabled this is
+      # an empty or unused read-only directory and no certificate has to exist.
+      # Put the CA (and optional client cert/key) here; paths in the
+      # TEMPORAL_POSTGRES_TLS_*_FILE variables are container paths under
+      # /etc/temporal/tls.
+      - type: bind
+        source: ${TEMPORAL_POSTGRES_TLS_CA_DIR:-./configs/deploy}
+        target: /etc/temporal/tls
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", 'temporal operator cluster health --address temporal:7233 | grep -q SERVING && temporal operator namespace describe --address temporal:7233 --namespace "$${DEFAULT_NAMESPACE:-default}" >/dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     restart: unless-stopped
 
-  flexprice-consumer:
-    image: flexprice-app:local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      temporal:
-        condition: service_started
-      redis:
-        condition: service_healthy
+  # One-shot PostgreSQL schema migration. Safe to rerun on every upgrade.
+  # Existing databases must be adopted once first — see the deployment guide.
+  migrate-postgres:
+    <<: *flexprice-image
+    profiles: ["init"]
+    command: ["./migrate", "postgres", "up"]
     environment:
-      - FLEXPRICE_DEPLOYMENT_MODE=consumer
-      - FLEXPRICE_ACTIVITY_ENABLED=true
-      # Override config.yaml settings for containerized environment
-      - FLEXPRICE_POSTGRES_HOST=postgres
-      - FLEXPRICE_POSTGRES_READER_HOST=postgres
-      - FLEXPRICE_KAFKA_BROKERS=kafka:9092
-      - FLEXPRICE_CLICKHOUSE_ADDRESS=clickhouse:9000
-      - FLEXPRICE_TEMPORAL_ADDRESS=temporal:7233
-      # Redis cache: single-node container, so cluster mode must be off
-      - FLEXPRICE_REDIS_HOST=redis
-      - FLEXPRICE_REDIS_CLUSTER_MODE=false
-      - FLEXPRICE_CACHE_ENABLED=true
-      - FLEXPRICE_CACHE_REDIS_ENABLED=true
-      # Auth: API key mode — raw key is sk_local_flexprice_test_key
-      - FLEXPRICE_AUTH_PROVIDER=api_key
-      - FLEXPRICE_AUTH_API_KEY_HEADER=x-api-key
-      - 'FLEXPRICE_AUTH_API_KEY_KEYS={"0cfd568f22158887f8b77bc019fb245b1f14077b80936342b052985efa7de46c":{"tenant_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","name":"Local Dev API Key","is_active":true}}'
-    volumes:
-      - ./internal/config:/app/internal/config
-    restart: unless-stopped
+      FLEXPRICE_POSTGRES_HOST: ${FLEXPRICE_POSTGRES_HOST:?set FLEXPRICE_POSTGRES_HOST in .env.deploy}
+      FLEXPRICE_POSTGRES_PORT: ${FLEXPRICE_POSTGRES_PORT:-5432}
+      FLEXPRICE_POSTGRES_USER: ${FLEXPRICE_POSTGRES_USER:?set FLEXPRICE_POSTGRES_USER in .env.deploy}
+      FLEXPRICE_POSTGRES_PASSWORD: ${FLEXPRICE_POSTGRES_PASSWORD:?set FLEXPRICE_POSTGRES_PASSWORD in .env.deploy}
+      FLEXPRICE_POSTGRES_DBNAME: ${FLEXPRICE_POSTGRES_DBNAME:-flexprice}
+      FLEXPRICE_POSTGRES_SSLMODE: ${FLEXPRICE_POSTGRES_SSLMODE:-require}
+    restart: "no"
 
-  flexprice-worker:
-    image: flexprice-app:local
+  # One-shot ClickHouse schema migration (migrations/clickhouse/*.sql).
+  migrate-clickhouse:
+    <<: *flexprice-image
+    profiles: ["init"]
+    command: ["./migrate", "clickhouse"]
+    environment:
+      FLEXPRICE_CLICKHOUSE_ADDRESS: clickhouse:9000
+      FLEXPRICE_CLICKHOUSE_USERNAME: ${CLICKHOUSE_USER:-flexprice}
+      FLEXPRICE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env.deploy}
+      FLEXPRICE_CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB:-flexprice}
     depends_on:
-      postgres:
+      clickhouse:
         condition: service_healthy
+    restart: "no"
+
+  flexprice:
+    <<: *flexprice-image
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-      temporal:
-        condition: service_started
       redis:
         condition: service_healthy
+      temporal:
+        condition: service_healthy
+    ports:
+      - "${FLEXPRICE_HTTP_BIND:-127.0.0.1}:${FLEXPRICE_HTTP_PORT:-8080}:8080"
     environment:
-      - FLEXPRICE_DEPLOYMENT_MODE=temporal_worker
-      - FLEXPRICE_ACTIVITY_ENABLED=true
-      # Override config.yaml settings for containerized environment
-      - FLEXPRICE_POSTGRES_HOST=postgres
-      - FLEXPRICE_POSTGRES_READER_HOST=postgres
-      - FLEXPRICE_KAFKA_BROKERS=kafka:9092
-      - FLEXPRICE_CLICKHOUSE_ADDRESS=clickhouse:9000
-      - FLEXPRICE_TEMPORAL_ADDRESS=temporal:7233
-      # Redis cache: single-node container, so cluster mode must be off
-      - FLEXPRICE_REDIS_HOST=redis
-      - FLEXPRICE_REDIS_CLUSTER_MODE=false
-      - FLEXPRICE_CACHE_ENABLED=true
-      - FLEXPRICE_CACHE_REDIS_ENABLED=true
-      # Auth: API key mode — raw key is sk_local_flexprice_test_key
-      - FLEXPRICE_AUTH_PROVIDER=api_key
-      - FLEXPRICE_AUTH_API_KEY_HEADER=x-api-key
-      - 'FLEXPRICE_AUTH_API_KEY_KEYS={"0cfd568f22158887f8b77bc019fb245b1f14077b80936342b052985efa7de46c":{"tenant_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","name":"Local Dev API Key","is_active":true}}'
-    volumes:
-      - ./internal/config:/app/internal/config
+      <<: *app-env
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 45s
     restart: unless-stopped
 
 volumes:
-  postgres-data:
   kafka-data:
   clickhouse-data:
   redis-data:

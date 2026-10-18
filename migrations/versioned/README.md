@@ -216,8 +216,8 @@ whose spelling differs from Postgres' canonical form. "Is the diff empty?" can n
 be a pass/fail test; "do the two schemas match?" can.
 
 It builds throwaway databases on your local Postgres — the one
-`docker compose up -d postgres` provides on `:5432`. Point it elsewhere with
-`PGHOST_` / `PGPORT_`.
+`docker compose -f docker-compose.dev.yml up -d postgres` provides on `:5432`.
+Point it elsewhere with `PGHOST_` / `PGPORT_`.
 
 ## Orphaned indexes — a known, unsolved gap
 

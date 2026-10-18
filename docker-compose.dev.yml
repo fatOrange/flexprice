@@ -1,0 +1,192 @@
+# Local development stack.
+#
+# This is the Compose file behind `make up`, `make dev-setup`, and the local
+# infrastructure commands. It bundles PostgreSQL, Kafka, ClickHouse, Redis,
+# Temporal (with UI), and one Flexprice process in deployment.mode=local.
+#
+# The root docker-compose.yml is the released-image deployment (external
+# PostgreSQL, no local Postgres, no Temporal UI). Keep the two files separate:
+# dev conveniences must not leak into the deployment contract.
+#
+# Direct use:
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   docker compose -f docker-compose.dev.yml logs -f flexprice
+
+name: flexprice-dev
+
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - 127.0.0.1:5432:5432
+    environment:
+      POSTGRES_USER: flexprice
+      POSTGRES_PASSWORD: flexprice123
+      POSTGRES_DB: flexprice
+    volumes:
+      - ./migrations/postgres:/docker-entrypoint-initdb.d/
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U flexprice -d flexprice
+      interval: 5s
+      timeout: 3s
+      retries: 100
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    ports:
+      - "127.0.0.1:29092:29092"
+    environment:
+      CLUSTER_ID: ca497efe-9f82-4b84-890b-d9969a9a2e1c
+      KAFKA_BROKER_ID: 0
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.9-alpine
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9009:9009"
+    environment:
+      CLICKHOUSE_USER: flexprice
+      CLICKHOUSE_PASSWORD: flexprice123
+      CLICKHOUSE_DB: flexprice
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://clickhouse:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:main
+    profiles:
+      - dev
+    depends_on:
+      - kafka
+    ports:
+      - "127.0.0.1:8084:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://kafka-ui:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  temporal:
+    image: temporalio/auto-setup:1.26.2
+    ports:
+      - "7233:7233"
+    environment:
+      - ENABLE_ES=false
+      - DB=postgres12
+      - DB_PORT=5432
+      - DBNAME=temporal
+      - VISIBILITY_DBNAME=temporal_visibility
+      - POSTGRES_USER=flexprice
+      - POSTGRES_PWD=flexprice123
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    ports:
+      - "127.0.0.1:8088:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+
+  flexprice:
+    image: flexprice-app:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - FLEXPRICE_DEPLOYMENT_MODE=local
+      - FLEXPRICE_ACTIVITY_ENABLED=true
+      - FLEXPRICE_POSTGRES_HOST=postgres
+      - FLEXPRICE_POSTGRES_READER_HOST=postgres
+      - FLEXPRICE_KAFKA_BROKERS=kafka:9092
+      - FLEXPRICE_KAFKA_TOPIC=events
+      - FLEXPRICE_KAFKA_TOPIC_LAZY=events_lazy
+      - FLEXPRICE_KAFKA_TOPIC_BULK=events_bulk
+      - FLEXPRICE_KAFKA_TOPIC_DLQ=events_dlq
+      - FLEXPRICE_RAW_EVENT_CONSUMPTION_TOPIC=raw_events
+      - FLEXPRICE_RAW_EVENT_CONSUMPTION_OUTPUT_TOPIC=events
+      - FLEXPRICE_WEBHOOK_TOPIC=system_events
+      - FLEXPRICE_CLICKHOUSE_ADDRESS=clickhouse:9000
+      - FLEXPRICE_TEMPORAL_ADDRESS=temporal:7233
+      # Redis cache: single-node container, so cluster mode must be off
+      - FLEXPRICE_REDIS_HOST=redis
+      - FLEXPRICE_REDIS_CLUSTER_MODE=false
+      - FLEXPRICE_CACHE_ENABLED=true
+      - FLEXPRICE_CACHE_REDIS_ENABLED=true
+      # Auth: local-only API key, raw key is sk_local_flexprice_test_key
+      - FLEXPRICE_AUTH_PROVIDER=api_key
+      - FLEXPRICE_AUTH_API_KEY_HEADER=x-api-key
+      - 'FLEXPRICE_AUTH_API_KEY_KEYS={"0cfd568f22158887f8b77bc019fb245b1f14077b80936342b052985efa7de46c":{"tenant_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","name":"Local Dev API Key","is_active":true}}'
+    volumes:
+      - ./internal/config:/app/internal/config
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  kafka-data:
+  clickhouse-data:
+  redis-data:
